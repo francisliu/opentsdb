@@ -12,20 +12,24 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.tools;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.List;
 
 import com.stumbleupon.async.Callback;
 import com.stumbleupon.async.Deferred;
 
+import net.opentsdb.Bytes;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.Delete;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.ResultScanner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.hbase.async.Bytes;
-import org.hbase.async.DeleteRequest;
-import org.hbase.async.HBaseClient;
-import org.hbase.async.KeyValue;
-import org.hbase.async.PutRequest;
-import org.hbase.async.Scanner;
 
 import net.opentsdb.core.Const;
 import net.opentsdb.core.IllegalDataException;
@@ -65,27 +69,29 @@ final class Fsck {
       usage(argp, "Not enough arguments.", 2);
     }
 
-    final HBaseClient client = CliOptions.clientFromOptions(argp);
+//    final HTable client = CliOptions.clientFromOptions(argp);
+    Configuration conf = HBaseConfiguration.create();
     final byte[] table = argp.get("--table", "tsdb").getBytes();
-    final TSDB tsdb = new TSDB(client, argp.get("--table", "tsdb"),
-                               argp.get("--uidtable", "tsdb-uid"));
+    final TSDB tsdb = new TSDB(conf,
+        argp.get("--table", "tsdb"),
+        argp.get("--uidtable", "tsdb-uid"));
     final boolean fix = argp.has("--fix");
     argp = null;
     int errors = 42;
     try {
-      errors = fsck(tsdb, client, table, fix, args);
+      errors = fsck(tsdb, conf, table, fix, args);
     } finally {
-      tsdb.shutdown().joinUninterruptibly();
+      tsdb.shutdown();
     }
     System.exit(errors == 0 ? 0 : 1);
   }
 
   private static int fsck(final TSDB tsdb,
-                           final HBaseClient client,
+                           Configuration conf,
                            final byte[] table,
                            final boolean fix,
                            final String[] args) throws Exception {
-
+    final HTable htable = new HTable(conf, table);
     /** Callback to asynchronously delete a specific {@link KeyValue}.  */
     final class DeleteOutOfOrder implements Callback<Deferred<Object>, Object> {
 
@@ -95,9 +101,11 @@ final class Fsck {
           this.kv = kv;
         }
 
-        public Deferred<Object> call(final Object arg) {
-          return client.delete(new DeleteRequest(table, kv.key(),
-                                                 kv.family(), kv.qualifier()));
+        public Deferred<Object> call(final Object arg) throws IOException {
+          Delete del = new Delete(kv.getRow());
+          del.deleteColumn(kv.getFamily(), kv.getQualifier());
+          htable.delete(del);
+          return null;
         }
 
         public String toString() {
@@ -120,14 +128,16 @@ final class Fsck {
       long kvcount = 0;
       long rowcount = 0;
       final Bytes.ByteMap<Seen> seen = new Bytes.ByteMap<Seen>();
-      final Scanner scanner = Internal.getScanner(query);
-      ArrayList<ArrayList<KeyValue>> rows;
-      while ((rows = scanner.nextRows().joinUninterruptibly()) != null) {
-        for (final ArrayList<KeyValue> row : rows) {
+      final ResultScanner scanner = Internal.getScanner(query);
+      Result rows[];
+      //TODO francis make this a constant
+      while((rows = scanner.next(10)).length > 0) {
+        for (final Result result : rows) {
+          List<KeyValue> row = result.list();
           rowcount++;
           // Take a copy of the row-key because we're going to zero-out the
           // timestamp and use that as a key in our `seen' map.
-          final byte[] key = row.get(0).key().clone();
+          final byte[] key = row.get(0).getRow().clone();
           final long base_time = Bytes.getUnsignedInt(key, metric_width);
           for (int i = metric_width; i < metric_width + Const.TIMESTAMP_BYTES; i++) {
             key[i] = 0;
@@ -146,8 +156,8 @@ final class Fsck {
                        + "ms (" + (100000 * 1000 / ping_start_time) + " KVs/s)");
               ping_start_time = now;
             }
-            byte[] value = kv.value();
-            final byte[] qual = kv.qualifier();
+            byte[] value = kv.getValue();
+            final byte[] qual = kv.getQualifier();
             if (qual.length < 2) {
               errors++;
               LOG.error("Invalid qualifier, must be on 2 bytes or more.\n\t"
@@ -204,11 +214,10 @@ final class Fsck {
                 errors++;
                 correctable++;
                 if (fix) {
-                  client.put(new PutRequest(table, ordered.key(),
-                                            ordered.family(),
-                                            ordered.qualifier(),
-                                            ordered.value()))
-                    .addCallbackDeferring(new DeleteOutOfOrder(kv));
+                  Put put = new Put(ordered.getRow());
+                  put.add(ordered.getFamily(), ordered.getQualifier(), ordered.getValue());
+                  htable.put(put);
+                  new DeleteOutOfOrder(kv).call(null);
                 } else {
                   LOG.error("Two or more values in a compacted cell are"
                             + " out of order within that cell.\n\t" + kv);
@@ -239,8 +248,9 @@ final class Fsck {
                   if (fix) {
                     value = value.clone();  // We're going to change it.
                     value[0] = value[1] = value[2] = value[3] = 0;
-                    client.put(new PutRequest(table, kv.key(), kv.family(),
-                                              qual, value));
+                    Put put = new Put(kv.getRow());
+                    put.add(kv.getFamily(), qual, value);
+                    htable.put(put);
                   } else {
                     LOG.error("Floating point value with 0xFF most significant"
                               + " bytes, probably caused by sign extension bug"
@@ -262,7 +272,7 @@ final class Fsck {
               errors++;
               correctable++;
               if (fix) {
-                final byte[] newkey = kv.key().clone();
+                final byte[] newkey = kv.getRow().clone();
                 // Fix the timestamp in the row key.
                 final long new_base_time = (timestamp - (timestamp % Const.MAX_TIMESPAN));
                 Bytes.setInt(newkey, (int) new_base_time, metric_width);
@@ -270,11 +280,11 @@ final class Fsck {
                                                | (qualifier & Internal.FLAGS_MASK));
                 final DeleteOutOfOrder delooo = new DeleteOutOfOrder(kv);
                 if (timestamp < prev.timestamp()) {
-                  client.put(new PutRequest(table, newkey, kv.family(),
-                                            Bytes.fromShort(newqual), value))
-                    // Only delete the offending KV once we're sure that the new
-                    // KV has been persisted in HBase.
-                    .addCallbackDeferring(delooo);
+                  Put put = new Put(newkey);
+                  put.add(kv.getFamily(), Bytes.fromShort(newqual), value);
+                  // Only delete the offending KV once we're sure that the new
+                  // KV has been persisted in HBase.
+                  delooo.call(null);
                 } else {
                   // We have two data points at exactly the same timestamp.
                   // This can happen when only the flags differ.  This is
@@ -293,11 +303,11 @@ final class Fsck {
                   .append(" (").append(DumpSeries.date(timestamp))
                   .append(") @ ").append(kv).append("\n\t");
                 DumpSeries.formatKeyValue(buf, tsdb, kv, base_time);
-                buf.append("\n\t  was found after\n\t").append(prev.timestamp)
-                  .append(" (").append(DumpSeries.date(prev.timestamp))
+                buf.append("\n\t  was found after\n\t").append(prev.timestamp())
+                  .append(" (").append(DumpSeries.date(prev.timestamp()))
                   .append(") @ ").append(prev.kv).append("\n\t");
                 DumpSeries.formatKeyValue(buf, tsdb, prev.kv,
-                                          Bytes.getUnsignedInt(prev.kv.key(), metric_width));
+                                          Bytes.getUnsignedInt(prev.kv.getRow(), metric_width));
                 LOG.error(buf.toString());
               }
             } else {

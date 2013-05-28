@@ -12,24 +12,13 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.uid;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 import com.stumbleupon.async.Deferred;
-
-import org.hbase.async.AtomicIncrementRequest;
-import org.hbase.async.Bytes;
-import org.hbase.async.GetRequest;
-import org.hbase.async.HBaseClient;
-import org.hbase.async.HBaseException;
-import org.hbase.async.HBaseRpc;
-import org.hbase.async.KeyValue;
-import org.hbase.async.PutRequest;
-import org.hbase.async.RowLock;
-import org.hbase.async.RowLockRequest;
-import org.hbase.async.Scanner;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -74,7 +63,7 @@ public final class TestUniqueId {
   private static final byte[] kind_array = { 'k', 'i', 'n', 'd' };
 
   @Test(expected=IllegalArgumentException.class)
-  public void testCtorZeroWidth() {
+  public void testCtorZeroWidth() throws IOException {
     uid = new UniqueId(client, table, kind, 0);
   }
 

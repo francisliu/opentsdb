@@ -12,6 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -19,11 +20,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 
+import net.opentsdb.Bytes;
+import org.apache.hadoop.hbase.KeyValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.hbase.async.Bytes;
-import org.hbase.async.KeyValue;
 
 /**
  * Represents a read-only sequence of continuous data points.
@@ -50,12 +50,12 @@ final class Span implements DataPoints {
     }
   }
 
-  public String metricName() {
+  public String metricName() throws IOException {
     checkNotEmpty();
     return rows.get(0).metricName();
   }
 
-  public Map<String, String> getTags() {
+  public Map<String, String> getTags() throws IOException {
     checkNotEmpty();
     return rows.get(0).getTags();
   }
@@ -88,7 +88,7 @@ final class Span implements DataPoints {
     long last_ts = 0;
     if (rows.size() != 0) {
       // Verify that we have the same metric id and tags.
-      final byte[] key = row.key();
+      final byte[] key = row.getRow();
       final RowSeq last = rows.get(rows.size() - 1);
       final short metric_width = tsdb.metrics.width();
       final short tags_offset = (short) (metric_width + Const.TIMESTAMP_BYTES);
@@ -140,8 +140,8 @@ final class Span implements DataPoints {
    */
   static long lastTimestampInRow(final short metric_width,
                                  final KeyValue row) {
-    final long base_time = Bytes.getUnsignedInt(row.key(), metric_width);
-    final byte[] qual = row.qualifier();
+    final long base_time = Bytes.getUnsignedInt(row.getRow(), metric_width);
+    final byte[] qual = row.getQualifier();
     final short last_delta = (short)
       (Bytes.getUnsignedShort(qual, qual.length - 2) >>> Const.FLAG_BITS);
     return base_time + last_delta;

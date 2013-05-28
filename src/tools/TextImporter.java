@@ -20,16 +20,12 @@ import java.io.InputStreamReader;
 import java.util.HashMap;
 import java.util.zip.GZIPInputStream;
 
-import com.stumbleupon.async.Callback;
-import com.stumbleupon.async.Deferred;
-
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.hbase.async.HBaseClient;
-import org.hbase.async.HBaseRpc;
-import org.hbase.async.PleaseThrottleException;
-import org.hbase.async.PutRequest;
 
 import net.opentsdb.core.Tags;
 import net.opentsdb.core.TSDB;
@@ -59,17 +55,21 @@ final class TextImporter {
       usage(argp, 2);
     }
 
-    final HBaseClient client = CliOptions.clientFromOptions(argp);
-    // Flush more frequently since we read very fast from the files.
-    client.setFlushInterval((short) 500);  // ms
-    final TSDB tsdb = new TSDB(client, argp.get("--table", "tsdb"),
+    Configuration conf = HBaseConfiguration.create();
+//    final HBaseClient client = CliOptions.clientFromOptions(argp);
+//    // Flush more frequently since we read very fast from the files.
+//    client.setFlushInterval((short) 500);  // ms
+    String tableName = argp.get("--table", "tsdb");
+    final TSDB tsdb = new TSDB(conf, tableName,
                                argp.get("--uidtable", "tsdb-uid"));
+    HTable hTable = new HTable(conf, tableName);
+
     argp = null;
     try {
       int points = 0;
       final long start_time = System.nanoTime();
       for (final String path : args) {
-        points += importFile(client, tsdb, path);
+        points += importFile(hTable, tsdb, path);
       }
       final double time_delta = (System.nanoTime() - start_time) / 1000000000.0;
       LOG.info(String.format("Total: imported %d data points in %.3fs"
@@ -84,7 +84,7 @@ final class TextImporter {
       });
     } finally {
       try {
-        tsdb.shutdown().joinUninterruptibly();
+        tsdb.shutdown();
       } catch (Exception e) {
         LOG.error("Unexpected exception", e);
         System.exit(1);
@@ -94,7 +94,7 @@ final class TextImporter {
 
   static volatile boolean throttle = false;
 
-  private static int importFile(final HBaseClient client,
+  private static int importFile(HTable hTable,
                                 final TSDB tsdb,
                                 final String path) throws IOException {
     final long start_time = System.nanoTime();
@@ -103,28 +103,6 @@ final class TextImporter {
     String line = null;
     int points = 0;
     try {
-      final class Errback implements Callback<Object, Exception> {
-        public Object call(final Exception arg) {
-          if (arg instanceof PleaseThrottleException) {
-            final PleaseThrottleException e = (PleaseThrottleException) arg;
-            LOG.warn("Need to throttle, HBase isn't keeping up.", e);
-            throttle = true;
-            final HBaseRpc rpc = e.getFailedRpc();
-            if (rpc instanceof PutRequest) {
-              client.put((PutRequest) rpc);  // Don't lose edits.
-            }
-            return null;
-          }
-          LOG.error("Exception caught while processing file "
-                    + path, arg);
-          System.exit(2);
-          return arg;
-        }
-        public String toString() {
-          return "importFile errback";
-        }
-      };
-      final Errback errback = new Errback();
       while ((line = in.readLine()) != null) {
         final String[] words = Tags.splitString(line, ' ');
         final String metric = words[0];
@@ -146,13 +124,11 @@ final class TextImporter {
           }
         }
         final WritableDataPoints dp = getDataPoints(tsdb, metric, tags);
-        Deferred<Object> d;
         if (Tags.looksLikeInteger(value)) {
-          d = dp.addPoint(timestamp, Tags.parseLong(value));
+          dp.addPoint(timestamp, Tags.parseLong(value));
         } else {  // floating point value
-          d = dp.addPoint(timestamp, Float.parseFloat(value));
+          dp.addPoint(timestamp, Float.parseFloat(value));
         }
-        d.addErrback(errback);
         points++;
         if (points % 1000000 == 0) {
           final long now = System.nanoTime();
@@ -162,14 +138,10 @@ final class TextImporter {
                                  (1000000 * 1000.0 / ping_start_time)));
           ping_start_time = now;
         }
+        //TODO this seems like dead code
         if (throttle) {
           LOG.info("Throttling...");
           long throttle_time = System.nanoTime();
-          try {
-            d.joinUninterruptibly();
-          } catch (Exception e) {
-            throw new RuntimeException("Should never happen", e);
-          }
           throttle_time = System.nanoTime() - throttle_time;
           if (throttle_time < 1000000000L) {
             LOG.info("Got throttled for only " + throttle_time + "ns, sleeping a bit now");
@@ -215,7 +187,7 @@ final class TextImporter {
   private static
     WritableDataPoints getDataPoints(final TSDB tsdb,
                                      final String metric,
-                                     final HashMap<String, String> tags) {
+                                     final HashMap<String, String> tags) throws IOException {
     final String key = metric + tags;
     WritableDataPoints dp = datapoints.get(key);
     if (dp != null) {

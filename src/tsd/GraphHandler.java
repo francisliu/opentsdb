@@ -35,6 +35,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
+import com.google.gwt.i18n.server.impl.ReflectionUtils;
+import org.apache.commons.lang.ObjectUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -104,6 +106,7 @@ final class GraphHandler implements HttpRpc {
   }
 
   public void execute(final TSDB tsdb, final HttpQuery query) {
+    LOG.info("Executing TSDB query: "+query);
     if (!query.hasQueryStringParam("json")
         && !query.hasQueryStringParam("png")
         && !query.hasQueryStringParam("ascii")) {
@@ -119,8 +122,10 @@ final class GraphHandler implements HttpRpc {
     try {
       doGraph(tsdb, query);
     } catch (IOException e) {
+      LOG.error("Error while graphing",e);
       query.internalError(e);
     } catch (IllegalArgumentException e) {
+      LOG.error("Error while graphing",e);
       query.badRequest(e.getMessage());
     }
   }
@@ -770,7 +775,7 @@ final class GraphHandler implements HttpRpc {
   private static void respondAsciiQuery(final HttpQuery query,
                                         final int max_age,
                                         final String basepath,
-                                        final Plot plot) {
+                                        final Plot plot) throws IOException {
     final String path = basepath + ".txt";
     PrintWriter asciifile;
     try {
@@ -825,7 +830,7 @@ final class GraphHandler implements HttpRpc {
    * @throws BadRequestException if the query was malformed.
    * @throws IllegalArgumentException if the metric or tags were malformed.
    */
-  private static Query[] parseQuery(final TSDB tsdb, final HttpQuery query) {
+  private static Query[] parseQuery(final TSDB tsdb, final HttpQuery query) throws IOException {
     final List<String> ms = query.getQueryStringParams("m");
     if (ms == null) {
       throw BadRequestException.missingParameter("m");
@@ -1047,9 +1052,10 @@ final class GraphHandler implements HttpRpc {
    * @return The path to the wrapper script.
    */
   private static String findGnuplotHelperScript() {
-    final URL url = GraphHandler.class.getClassLoader().getResource(WRAPPER);
+    String wrapperPath = WRAPPER;
+    final URL url = GraphHandler.class.getClassLoader().getResource(wrapperPath);
     if (url == null) {
-      throw new RuntimeException("Couldn't find " + WRAPPER + " on the"
+      throw new RuntimeException("Couldn't find " + wrapperPath + " on the"
         + " CLASSPATH: " + System.getProperty("java.class.path"));
     }
     final String path = url.getFile();

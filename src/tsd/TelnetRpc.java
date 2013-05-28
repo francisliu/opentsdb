@@ -18,6 +18,8 @@ import org.jboss.netty.channel.Channel;
 
 import net.opentsdb.core.TSDB;
 
+import java.io.IOException;
+
 /** Base interface for all telnet-style RPC handlers. */
 interface TelnetRpc {
 
@@ -28,6 +30,6 @@ interface TelnetRpc {
    * @param command The command received, split.
    * @return A deferred result.
    */
-  Deferred<Object> execute(TSDB tsdb, Channel chan, String[] command);
+  void execute(TSDB tsdb, Channel chan, String[] command) throws IOException;
 
 }

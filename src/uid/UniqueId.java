@@ -12,26 +12,26 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.uid;
 
+import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.Arrays;
-import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
+import net.opentsdb.Bytes;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.Delete;
+import org.apache.hadoop.hbase.client.Get;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.ResultScanner;
+import org.apache.hadoop.hbase.client.RowLock;
+import org.apache.hadoop.hbase.client.Scan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.hbase.async.Bytes;
-import org.hbase.async.DeleteRequest;
-import org.hbase.async.GetRequest;
-import org.hbase.async.HBaseClient;
-import org.hbase.async.HBaseException;
-import org.hbase.async.KeyValue;
-import org.hbase.async.PutRequest;
-import org.hbase.async.RowLock;
-import org.hbase.async.RowLockRequest;
-import org.hbase.async.Scanner;
 
 /**
  * Thread-safe implementation of the {@link UniqueIdInterface}.
@@ -62,7 +62,7 @@ public final class UniqueId implements UniqueIdInterface {
   private static final short MAX_SUGGESTIONS = 25;
 
   /** HBase client to use.  */
-  private final HBaseClient client;
+  private final HTable client;
   /** Table where IDs are stored.  */
   private final byte[] table;
   /** The kind of UniqueId, used as the column qualifier. */
@@ -92,9 +92,9 @@ public final class UniqueId implements UniqueIdInterface {
    * @throws IllegalArgumentException if width is negative or too small/large
    * or if kind is an empty string.
    */
-  public UniqueId(final HBaseClient client, final byte[] table, final String kind,
-                  final int width) {
-    this.client = client;
+  public UniqueId(Configuration conf, final byte[] table, final String kind,
+                  final int width) throws IOException {
+    this.client = new HTable(conf, table);
     this.table = table;
     if (kind.isEmpty()) {
       throw new IllegalArgumentException("Empty string as 'kind' argument!");
@@ -138,7 +138,7 @@ public final class UniqueId implements UniqueIdInterface {
     idCache.clear();
   }
 
-  public String getName(final byte[] id) throws NoSuchUniqueId, HBaseException {
+  public String getName(final byte[] id) throws NoSuchUniqueId, IOException {
     if (id.length != idWidth) {
       throw new IllegalArgumentException("Wrong id.length = " + id.length
                                          + " which is != " + idWidth
@@ -163,7 +163,7 @@ public final class UniqueId implements UniqueIdInterface {
     return idCache.get(fromBytes(id));
   }
 
-  private String getNameFromHBase(final byte[] id) throws HBaseException {
+  private String getNameFromHBase(final byte[] id) throws IOException {
     final byte[] name = hbaseGet(id, NAME_FAMILY);
     return name == null ? null : fromBytes(name);
   }
@@ -180,7 +180,7 @@ public final class UniqueId implements UniqueIdInterface {
     }
   }
 
-  public byte[] getId(final String name) throws NoSuchUniqueName, HBaseException {
+  public byte[] getId(final String name) throws NoSuchUniqueName, IOException {
     byte[] id = getIdFromCache(name);
     if (id != null) {
       cacheHits++;
@@ -205,7 +205,7 @@ public final class UniqueId implements UniqueIdInterface {
     return nameCache.get(name);
   }
 
-  private byte[] getIdFromHBase(final String name) throws HBaseException {
+  private byte[] getIdFromHBase(final String name) throws IOException {
     return hbaseGet(toBytes(name), ID_FAMILY);
   }
 
@@ -225,9 +225,9 @@ public final class UniqueId implements UniqueIdInterface {
     }
   }
 
-  public byte[] getOrCreateId(String name) throws HBaseException {
+  public byte[] getOrCreateId(String name) throws IOException {
     short attempt = MAX_ATTEMPTS_ASSIGN_ID;
-    HBaseException hbe = null;
+    IOException hbe = null;
 
     while (attempt-- > 0) {
       try {
@@ -241,7 +241,7 @@ public final class UniqueId implements UniqueIdInterface {
       RowLock lock;
       try {
         lock = getLock();
-      } catch (HBaseException e) {
+      } catch (IOException e) {
         try {
           Thread.sleep(61000 / MAX_ATTEMPTS_ASSIGN_ID);
         } catch (InterruptedException ie) {
@@ -292,9 +292,9 @@ public final class UniqueId implements UniqueIdInterface {
               }
               row = Bytes.fromLong(id);
             }
-            final PutRequest update_maxid = new PutRequest(
-              table, MAXID_ROW, ID_FAMILY, kind, row, lock);
-            hbasePutWithRetry(update_maxid, MAX_ATTEMPTS_PUT,
+            Put put = new Put(MAXID_ROW, lock);
+            put.add(ID_FAMILY, kind, row);
+            hbasePutWithRetry(put, MAX_ATTEMPTS_PUT,
                               INITIAL_EXP_BACKOFF_DELAY);
           } // end HACK HACK HACK.
           LOG.info("Got ID=" + id
@@ -317,7 +317,7 @@ public final class UniqueId implements UniqueIdInterface {
           }
           // Shrink the ID on the requested number of bytes.
           row = Arrays.copyOfRange(row, row.length - idWidth, row.length);
-        } catch (HBaseException e) {
+        } catch (IOException e) {
           LOG.error("Failed to assign an ID, ICV on row="
                     + Arrays.toString(MAXID_ROW) + " column='" +
                     fromBytes(ID_FAMILY) + ':' + kind() + '\'', e);
@@ -338,11 +338,11 @@ public final class UniqueId implements UniqueIdInterface {
         // partially assigned ID.  The reverse mapping on its own is harmless
         // but the forward mapping without reverse mapping is bad.
         try {
-          final PutRequest reverse_mapping = new PutRequest(
-            table, row, NAME_FAMILY, kind, toBytes(name));
-          hbasePutWithRetry(reverse_mapping, MAX_ATTEMPTS_PUT,
+          Put put = new Put(row);
+          put.add(NAME_FAMILY, kind, toBytes(name));
+          hbasePutWithRetry(put, MAX_ATTEMPTS_PUT,
                             INITIAL_EXP_BACKOFF_DELAY);
-        } catch (HBaseException e) {
+        } catch (IOException e) {
           LOG.error("Failed to Put reverse mapping!  ID leaked: " + id, e);
           hbe = e;
           continue;
@@ -350,11 +350,11 @@ public final class UniqueId implements UniqueIdInterface {
 
         // Now create the forward mapping.
         try {
-          final PutRequest forward_mapping = new PutRequest(
-            table, toBytes(name), ID_FAMILY, kind, row);
-          hbasePutWithRetry(forward_mapping, MAX_ATTEMPTS_PUT,
+          Put put = new Put(toBytes(name));
+          put.add(ID_FAMILY, kind, row);
+          hbasePutWithRetry(put, MAX_ATTEMPTS_PUT,
                             INITIAL_EXP_BACKOFF_DELAY);
-        } catch (HBaseException e) {
+        } catch (IOException e) {
           LOG.error("Failed to Put forward mapping!  ID leaked: " + id, e);
           hbe = e;
           continue;
@@ -384,15 +384,16 @@ public final class UniqueId implements UniqueIdInterface {
    * @throws HBaseException if there was a problem getting suggestions from
    * HBase.
    */
-  public List<String> suggest(final String search) throws HBaseException {
+  public List<String> suggest(final String search) throws IOException {
     // TODO(tsuna): Add caching to try to avoid re-scanning the same thing.
-    final Scanner scanner = getSuggestScanner(search);
+    final ResultScanner scanner = getSuggestScanner(search);
     final LinkedList<String> suggestions = new LinkedList<String>();
     try {
-      ArrayList<ArrayList<KeyValue>> rows;
+      Result results[];
       while ((short) suggestions.size() < MAX_SUGGESTIONS
-             && (rows = scanner.nextRows().joinUninterruptibly()) != null) {
-        for (final ArrayList<KeyValue> row : rows) {
+             && (results = scanner.next((int)MAX_SUGGESTIONS)) != null) {
+        for (final Result result : results) {
+          List<KeyValue> row = result.list();
           if (row.size() != 1) {
             LOG.error("WTF shouldn't happen!  Scanner " + scanner + " returned"
                       + " a row that doesn't have exactly 1 KeyValue: " + row);
@@ -400,9 +401,9 @@ public final class UniqueId implements UniqueIdInterface {
               continue;
             }
           }
-          final byte[] key = row.get(0).key();
+          final byte[] key = row.get(0).getRow();
           final String name = fromBytes(key);
-          final byte[] id = row.get(0).value();
+          final byte[] id = row.get(0).getValue();
           final byte[] cached_id = nameCache.get(name);
           if (cached_id == null) {
             addIdToCache(name, id);
@@ -415,7 +416,7 @@ public final class UniqueId implements UniqueIdInterface {
           suggestions.add(name);
         }
       }
-    } catch (HBaseException e) {
+    } catch (IOException e) {
       throw e;
     } catch (Exception e) {
       throw new RuntimeException("Should never be here", e);
@@ -442,7 +443,7 @@ public final class UniqueId implements UniqueIdInterface {
    * @throws HBaseException if there was a problem with HBase while trying to
    * update the mapping.
    */
-  public void rename(final String oldname, final String newname) {
+  public void rename(final String oldname, final String newname) throws IOException {
     final byte[] row = getId(oldname);
     {
       byte[] id = null;
@@ -465,11 +466,11 @@ public final class UniqueId implements UniqueIdInterface {
     // partially assigned ID.  The reverse mapping on its own is harmless
     // but the forward mapping without reverse mapping is bad.
     try {
-      final PutRequest reverse_mapping = new PutRequest(
-        table, row, NAME_FAMILY, kind, newnameb);
-      hbasePutWithRetry(reverse_mapping, MAX_ATTEMPTS_PUT,
+      Put put = new Put(row);
+      put.add(NAME_FAMILY, kind, newnameb);
+      hbasePutWithRetry(put, MAX_ATTEMPTS_PUT,
                         INITIAL_EXP_BACKOFF_DELAY);
-    } catch (HBaseException e) {
+    } catch (IOException e) {
       LOG.error("When trying rename(\"" + oldname
         + "\", \"" + newname + "\") on " + this + ": Failed to update reverse"
         + " mapping for ID=" + Arrays.toString(row), e);
@@ -478,11 +479,11 @@ public final class UniqueId implements UniqueIdInterface {
 
     // Now create the new forward mapping.
     try {
-      final PutRequest forward_mapping = new PutRequest(
-        table, newnameb, ID_FAMILY, kind, row);
-      hbasePutWithRetry(forward_mapping, MAX_ATTEMPTS_PUT,
+      Put put = new Put(newnameb);
+      put.add(ID_FAMILY, kind, row);
+      hbasePutWithRetry(put, MAX_ATTEMPTS_PUT,
                         INITIAL_EXP_BACKOFF_DELAY);
-    } catch (HBaseException e) {
+    } catch (IOException e) {
       LOG.error("When trying rename(\"" + oldname
         + "\", \"" + newname + "\") on " + this + ": Failed to create the"
         + " new forward mapping with ID=" + Arrays.toString(row), e);
@@ -496,10 +497,10 @@ public final class UniqueId implements UniqueIdInterface {
 
     // Delete the old forward mapping.
     try {
-      final DeleteRequest old_forward_mapping = new DeleteRequest(
-        table, toBytes(oldname), ID_FAMILY, kind);
-      client.delete(old_forward_mapping).joinUninterruptibly();
-    } catch (HBaseException e) {
+      Delete delete = new Delete(toBytes(oldname));
+      delete.deleteColumn(ID_FAMILY, kind);
+      client.delete(delete);
+    } catch (IOException e) {
       LOG.error("When trying rename(\"" + oldname
         + "\", \"" + newname + "\") on " + this + ": Failed to remove the"
         + " old forward mapping for ID=" + Arrays.toString(row), e);
@@ -523,7 +524,7 @@ public final class UniqueId implements UniqueIdInterface {
   /**
    * Creates a scanner that scans the right range of rows for suggestions.
    */
-  private Scanner getSuggestScanner(final String search) {
+  private ResultScanner getSuggestScanner(final String search) throws IOException {
     final byte[] start_row;
     final byte[] end_row;
     if (search.isEmpty()) {
@@ -534,13 +535,11 @@ public final class UniqueId implements UniqueIdInterface {
       end_row = Arrays.copyOf(start_row, start_row.length);
       end_row[start_row.length - 1]++;
     }
-    final Scanner scanner = client.newScanner(table);
-    scanner.setStartKey(start_row);
-    scanner.setStopKey(end_row);
-    scanner.setFamily(ID_FAMILY);
-    scanner.setQualifier(kind);
-    scanner.setMaxNumRows(MAX_SUGGESTIONS);
-    return scanner;
+    final Scan scanner = new Scan(start_row);
+    scanner.setStartRow(start_row);
+    scanner.setStopRow(end_row);
+    scanner.addColumn(ID_FAMILY, kind);
+    return client.getScanner(scanner);
   }
 
   /** Gets an exclusive lock for on the table using the MAXID_ROW.
@@ -548,10 +547,10 @@ public final class UniqueId implements UniqueIdInterface {
    * (default = 60000)
    * @throws HBaseException if the row lock couldn't be acquired.
    */
-  private RowLock getLock() throws HBaseException {
+  private RowLock getLock() throws IOException {
     try {
-      return client.lockRow(new RowLockRequest(table, MAXID_ROW)).joinUninterruptibly();
-    } catch (HBaseException e) {
+      return client.lockRow(MAXID_ROW);
+    } catch (IOException e) {
       LOG.warn("Failed to lock the `MAXID_ROW' row", e);
       throw e;
     } catch (Exception e) {
@@ -563,31 +562,33 @@ public final class UniqueId implements UniqueIdInterface {
   private void unlock(final RowLock lock) {
     try {
       client.unlockRow(lock);
-    } catch (HBaseException e) {
+    } catch (IOException e) {
       LOG.error("Error while releasing the lock on row `MAXID_ROW'", e);
     }
   }
 
   /** Returns the cell of the specified row, using family:kind. */
-  private byte[] hbaseGet(final byte[] row, final byte[] family) throws HBaseException {
+  private byte[] hbaseGet(final byte[] row, final byte[] family) throws IOException {
     return hbaseGet(row, family, null);
   }
 
   /** Returns the cell of the specified row key, using family:kind. */
   private byte[] hbaseGet(final byte[] key, final byte[] family,
-                          final RowLock lock) throws HBaseException {
-    final GetRequest get = new GetRequest(table, key);
+                          final RowLock lock) throws IOException {
+    Get get = new Get(key);
+    get.addFamily(family);
     if (lock != null) {
-      get.withRowLock(lock);
+      get = new Get(key, lock);
     }
-    get.family(family).qualifier(kind);
+    get.addColumn(family, kind);
     try {
-      final ArrayList<KeyValue> row = client.get(get).joinUninterruptibly();
+
+      final List<KeyValue> row = client.get(get).list();
       if (row == null || row.isEmpty()) {
         return null;
       }
-      return row.get(0).value();
-    } catch (HBaseException e) {
+      return row.get(0).getValue();
+    } catch (IOException e) {
       throw e;
     } catch (Exception e) {
       throw new RuntimeException("Should never be here", e);
@@ -606,14 +607,13 @@ public final class UniqueId implements UniqueIdInterface {
    * @throws HBaseException if all the attempts have failed.  This exception
    * will be the exception of the last attempt.
    */
-  private void hbasePutWithRetry(final PutRequest put, short attempts, short wait)
-    throws HBaseException {
-    put.setBufferable(false);  // TODO(tsuna): Remove once this code is async.
+  private void hbasePutWithRetry(final Put put, short attempts, short wait)
+    throws IOException {
     while (attempts-- > 0) {
       try {
-        client.put(put).joinUninterruptibly();
+        client.put(put);
         return;
-      } catch (HBaseException e) {
+      } catch (IOException e) {
         if (attempts > 0) {
           LOG.error("Put failed, attempts left=" + attempts
                     + " (retrying in " + wait + " ms), put=" + put, e);

@@ -12,6 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -21,17 +22,16 @@ import com.stumbleupon.async.Callback;
 import com.stumbleupon.async.Deferred;
 import com.stumbleupon.async.DeferredGroupException;
 
+import net.opentsdb.Bytes;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.Delete;
+import org.apache.hadoop.hbase.client.Get;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.hbase.async.Bytes;
-import org.hbase.async.ClientStats;
-import org.hbase.async.DeleteRequest;
-import org.hbase.async.GetRequest;
-import org.hbase.async.HBaseClient;
-import org.hbase.async.HBaseException;
-import org.hbase.async.KeyValue;
-import org.hbase.async.PutRequest;
 
 import net.opentsdb.uid.UniqueId;
 import net.opentsdb.stats.Histogram;
@@ -62,7 +62,7 @@ public final class TSDB {
   }
 
   /** Client for the HBase cluster to use.  */
-  final HBaseClient client;
+  final HTable client;
 
   /** Name of the table in which timeseries are stored.  */
   final byte[] table;
@@ -90,16 +90,17 @@ public final class TSDB {
    * @param uniqueids_table The name of the HBase table where the unique IDs
    * are stored.
    */
-  public TSDB(final HBaseClient client,
+  public TSDB(final Configuration conf,
               final String timeseries_table,
-              final String uniqueids_table) {
-    this.client = client;
+              final String uniqueids_table) throws IOException {
+    //TODO use UTF-8 encoding
+    this.client = new HTable(conf, timeseries_table.getBytes());
     table = timeseries_table.getBytes();
 
     final byte[] uidtable = uniqueids_table.getBytes();
-    metrics = new UniqueId(client, uidtable, METRICS_QUAL, METRICS_WIDTH);
-    tag_names = new UniqueId(client, uidtable, TAG_NAME_QUAL, TAG_NAME_WIDTH);
-    tag_values = new UniqueId(client, uidtable, TAG_VALUE_QUAL,
+    metrics = new UniqueId(conf, uidtable, METRICS_QUAL, METRICS_WIDTH);
+    tag_names = new UniqueId(conf, uidtable, TAG_NAME_QUAL, TAG_NAME_WIDTH);
+    tag_values = new UniqueId(conf, uidtable, TAG_VALUE_QUAL,
                               TAG_VALUE_WIDTH);
     compactionq = new CompactionQueue(this);
   }
@@ -150,26 +151,27 @@ public final class TSDB {
     } finally {
       collector.clearExtraTag("class");
     }
-    final ClientStats stats = client.stats();
-    collector.record("hbase.root_lookups", stats.rootLookups());
-    collector.record("hbase.meta_lookups",
-                     stats.uncontendedMetaLookups(), "type=uncontended");
-    collector.record("hbase.meta_lookups",
-                     stats.contendedMetaLookups(), "type=contended");
-    collector.record("hbase.rpcs",
-                     stats.atomicIncrements(), "type=increment");
-    collector.record("hbase.rpcs", stats.deletes(), "type=delete");
-    collector.record("hbase.rpcs", stats.gets(), "type=get");
-    collector.record("hbase.rpcs", stats.puts(), "type=put");
-    collector.record("hbase.rpcs", stats.rowLocks(), "type=rowLock");
-    collector.record("hbase.rpcs", stats.scannersOpened(), "type=openScanner");
-    collector.record("hbase.rpcs", stats.scans(), "type=scan");
-    collector.record("hbase.rpcs.batched", stats.numBatchedRpcSent());
-    collector.record("hbase.flushes", stats.flushes());
-    collector.record("hbase.connections.created", stats.connectionsCreated());
-    collector.record("hbase.nsre", stats.noSuchRegionExceptions());
-    collector.record("hbase.nsre.rpcs_delayed",
-                     stats.numRpcDelayedDueToNSRE());
+    //TODO actually return hbase stats
+//    final ClientStats stats = client.stats();
+//    collector.record("hbase.root_lookups", stats.rootLookups());
+//    collector.record("hbase.meta_lookups",
+//                     stats.uncontendedMetaLookups(), "type=uncontended");
+//    collector.record("hbase.meta_lookups",
+//                     stats.contendedMetaLookups(), "type=contended");
+//    collector.record("hbase.rpcs",
+//                     stats.atomicIncrements(), "type=increment");
+//    collector.record("hbase.rpcs", stats.deletes(), "type=delete");
+//    collector.record("hbase.rpcs", stats.gets(), "type=get");
+//    collector.record("hbase.rpcs", stats.puts(), "type=put");
+//    collector.record("hbase.rpcs", stats.rowLocks(), "type=rowLock");
+//    collector.record("hbase.rpcs", stats.scannersOpened(), "type=openScanner");
+//    collector.record("hbase.rpcs", stats.scans(), "type=scan");
+//    collector.record("hbase.rpcs.batched", stats.numBatchedRpcSent());
+//    collector.record("hbase.flushes", stats.flushes());
+//    collector.record("hbase.connections.created", stats.connectionsCreated());
+//    collector.record("hbase.nsre", stats.noSuchRegionExceptions());
+//    collector.record("hbase.nsre.rpcs_delayed",
+//                     stats.numRpcDelayedDueToNSRE());
 
     compactionq.collectStats(collector);
   }
@@ -233,13 +235,13 @@ public final class TSDB {
    * @throws HBaseException (deferred) if there was a problem while persisting
    * data.
    */
-  public Deferred<Object> addPoint(final String metric,
-                                   final long timestamp,
-                                   final long value,
-                                   final Map<String, String> tags) {
+  public void addPoint(final String metric,
+                       final long timestamp,
+                       final long value,
+                       final Map<String, String> tags) throws IOException {
     final short flags = 0x7;  // An int stored on 8 bytes.
-    return addPointInternal(metric, timestamp, Bytes.fromLong(value),
-                            tags, flags);
+    addPointInternal(metric, timestamp, Bytes.fromLong(value),
+                          tags, flags);
   }
 
   /**
@@ -263,26 +265,26 @@ public final class TSDB {
    * @throws HBaseException (deferred) if there was a problem while persisting
    * data.
    */
-  public Deferred<Object> addPoint(final String metric,
+  public void addPoint(final String metric,
                                    final long timestamp,
                                    final float value,
-                                   final Map<String, String> tags) {
+                                   final Map<String, String> tags) throws IOException {
     if (Float.isNaN(value) || Float.isInfinite(value)) {
       throw new IllegalArgumentException("value is NaN or Infinite: " + value
                                          + " for metric=" + metric
                                          + " timestamp=" + timestamp);
     }
     final short flags = Const.FLAG_FLOAT | 0x3;  // A float stored on 4 bytes.
-    return addPointInternal(metric, timestamp,
-                            Bytes.fromInt(Float.floatToRawIntBits(value)),
-                            tags, flags);
+    addPointInternal(metric, timestamp,
+                    Bytes.fromInt(Float.floatToRawIntBits(value)),
+                    tags, flags);
   }
 
-  private Deferred<Object> addPointInternal(final String metric,
+  private void addPointInternal(final String metric,
                                             final long timestamp,
                                             final byte[] value,
                                             final Map<String, String> tags,
-                                            final short flags) {
+                                            final short flags) throws IOException {
     if ((timestamp & 0xFFFFFFFF00000000L) != 0) {
       // => timestamp < 0 || timestamp > Integer.MAX_VALUE
       throw new IllegalArgumentException((timestamp < 0 ? "negative " : "bad")
@@ -298,11 +300,11 @@ public final class TSDB {
     scheduleForCompaction(row, (int) base_time);
     final short qualifier = (short) ((timestamp - base_time) << Const.FLAG_BITS
                                      | flags);
-    final PutRequest point = new PutRequest(table, row, FAMILY,
-                                            Bytes.fromShort(qualifier), value);
+    final Put point = new Put(row);
+    point.add(FAMILY, Bytes.fromShort(qualifier), value);
     // TODO(tsuna): Add a callback to time the latency of HBase and store the
     // timing in a moving Histogram (once we have a class for this).
-    return client.put(point);
+    client.put(point);
   }
 
   /**
@@ -317,8 +319,8 @@ public final class TSDB {
    * hierarchy to handle the possible failures.  Some of them are easily
    * recoverable by retrying, some are not.
    */
-  public Deferred<Object> flush() throws HBaseException {
-    return client.flush();
+  public void flush() throws IOException {
+    client.flushCommits();
   }
 
   /**
@@ -335,17 +337,18 @@ public final class TSDB {
    * hierarchy to handle the possible failures.  Some of them are easily
    * recoverable by retrying, some are not.
    */
-  public Deferred<Object> shutdown() {
+  public void shutdown() throws IOException {
     final class HClientShutdown implements Callback<Object, ArrayList<Object>> {
-      public Object call(final ArrayList<Object> args) {
-        return client.shutdown();
+      public Object call(final ArrayList<Object> args) throws IOException {
+        client.close();
+        return null;
       }
       public String toString() {
         return "shutdown HBase client";
       }
     }
     final class ShutdownErrback implements Callback<Object, Exception> {
-      public Object call(final Exception e) {
+      public Object call(final Exception e) throws IOException {
         final Logger LOG = LoggerFactory.getLogger(ShutdownErrback.class);
         if (e instanceof DeferredGroupException) {
           final DeferredGroupException ge = (DeferredGroupException) e;
@@ -357,24 +360,31 @@ public final class TSDB {
         } else {
           LOG.error("Failed to flush the compaction queue", e);
         }
-        return client.shutdown();
+        client.close();
+        return null;
       }
       public String toString() {
         return "shutdown HBase client after error";
       }
     }
     // First flush the compaction queue, then shutdown the HBase client.
-    return enable_compactions
-      ? compactionq.flush().addCallbacks(new HClientShutdown(),
-                                         new ShutdownErrback())
-      : client.shutdown();
+    if(enable_compactions) {
+      try {
+        compactionq.flush();
+        new HClientShutdown().call(null);
+      } catch (IOException e) {
+        throw (IOException)new ShutdownErrback().call(e);
+      }
+    } else {
+      client.close();
+    }
   }
 
   /**
    * Given a prefix search, returns a few matching metric names.
    * @param search A prefix to search.
    */
-  public List<String> suggestMetrics(final String search) {
+  public List<String> suggestMetrics(final String search) throws IOException {
     return metrics.suggest(search);
   }
 
@@ -382,7 +392,7 @@ public final class TSDB {
    * Given a prefix search, returns a few matching tag names.
    * @param search A prefix to search.
    */
-  public List<String> suggestTagNames(final String search) {
+  public List<String> suggestTagNames(final String search) throws IOException {
     return tag_names.suggest(search);
   }
 
@@ -390,7 +400,7 @@ public final class TSDB {
    * Given a prefix search, returns a few matching tag values.
    * @param search A prefix to search.
    */
-  public List<String> suggestTagValues(final String search) {
+  public List<String> suggestTagValues(final String search) throws IOException {
     return tag_values.suggest(search);
   }
 
@@ -408,7 +418,7 @@ public final class TSDB {
   // Compaction helpers //
   // ------------------ //
 
-  final KeyValue compact(final ArrayList<KeyValue> row) {
+  final KeyValue compact(final List<KeyValue> row) throws IOException {
     return compactionq.compact(row);
   }
 
@@ -431,20 +441,26 @@ public final class TSDB {
   // ------------------------ //
 
   /** Gets the entire given row from the data table. */
-  final Deferred<ArrayList<KeyValue>> get(final byte[] key) {
-    return client.get(new GetRequest(table, key));
+  final Result get(final byte[] key) throws IOException {
+    return client.get(new Get(key));
   }
 
   /** Puts the given value into the data table. */
-  final Deferred<Object> put(final byte[] key,
-                             final byte[] qualifier,
-                             final byte[] value) {
-    return client.put(new PutRequest(table, key, FAMILY, qualifier, value));
+  final void put(final byte[] key,
+                 final byte[] qualifier,
+                 final byte[] value) throws IOException {
+    Put put = new Put(key);
+    put.add(FAMILY, qualifier, value);
+    client.put(put);
   }
 
   /** Deletes the given cells from the data table. */
-  final Deferred<Object> delete(final byte[] key, final byte[][] qualifiers) {
-    return client.delete(new DeleteRequest(table, key, FAMILY, qualifiers));
+  final void delete(final byte[] key, final byte[][] qualifiers) throws IOException {
+    Delete delete = new Delete(key);
+    for(byte[] q: qualifiers) {
+      delete.deleteColumn(FAMILY, q);
+    }
+    client.delete(delete);
   }
 
 }

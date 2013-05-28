@@ -12,21 +12,25 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.tools;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 
-import org.hbase.async.Bytes;
-import org.hbase.async.DeleteRequest;
-import org.hbase.async.HBaseClient;
-import org.hbase.async.KeyValue;
-import org.hbase.async.Scanner;
-
+import net.opentsdb.Bytes;
 import net.opentsdb.core.IllegalDataException;
 import net.opentsdb.core.Internal;
 import net.opentsdb.core.Query;
 import net.opentsdb.core.TSDB;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.Delete;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.ResultScanner;
 
 /**
  * Tool to dump the data straight from HBase.
@@ -65,23 +69,25 @@ final class DumpSeries {
       usage(argp, "Not enough arguments.", 2);
     }
 
-    final HBaseClient client = CliOptions.clientFromOptions(argp);
+//    final HBaseClient client = CliOptions.clientFromOptions(argp);
+    Configuration conf = HBaseConfiguration.create();
+
     final byte[] table = argp.get("--table", "tsdb").getBytes();
-    final TSDB tsdb = new TSDB(client, argp.get("--table", "tsdb"),
+    final TSDB tsdb = new TSDB(conf, argp.get("--table", "tsdb"),
                                argp.get("--uidtable", "tsdb-uid"));
     final boolean delete = argp.has("--delete");
     final boolean importformat = delete || argp.has("--import");
+    final HTable htable = new HTable(conf, table);
     argp = null;
     try {
-      doDump(tsdb, client, table, delete, importformat, args);
+      doDump(tsdb, htable, delete, importformat, args);
     } finally {
-      tsdb.shutdown().joinUninterruptibly();
+      tsdb.shutdown();
     }
   }
 
   private static void doDump(final TSDB tsdb,
-                             final HBaseClient client,
-                             final byte[] table,
+                             HTable table,
                              final boolean delete,
                              final boolean importformat,
                              final String[] args) throws Exception {
@@ -90,48 +96,46 @@ final class DumpSeries {
 
     final StringBuilder buf = new StringBuilder();
     for (final Query query : queries) {
-      final Scanner scanner = Internal.getScanner(query);
-      ArrayList<ArrayList<KeyValue>> rows;
-      while ((rows = scanner.nextRows().joinUninterruptibly()) != null) {
-        for (final ArrayList<KeyValue> row : rows) {
-          buf.setLength(0);
-          final byte[] key = row.get(0).key();
-          final long base_time = Internal.baseTime(tsdb, key);
-          final String metric = Internal.metricName(tsdb, key);
-          // Print the row key.
-          if (!importformat) {
-            buf.append(Arrays.toString(key))
-              .append(' ')
-              .append(metric)
-              .append(' ')
-              .append(base_time)
-              .append(" (").append(date(base_time)).append(") ");
-            try {
-              buf.append(Internal.getTags(tsdb, key));
-            } catch (RuntimeException e) {
-              buf.append(e.getClass().getName() + ": " + e.getMessage());
-            }
-            buf.append('\n');
-            System.out.print(buf);
+      final ResultScanner scanner = Internal.getScanner(query);
+      for (Result result: scanner) {
+        List<KeyValue> row = result.list();
+        buf.setLength(0);
+        final byte[] key = row.get(0).getRow();
+        final long base_time = Internal.baseTime(tsdb, key);
+        final String metric = Internal.metricName(tsdb, key);
+        // Print the row key.
+        if (!importformat) {
+          buf.append(Arrays.toString(key))
+            .append(' ')
+            .append(metric)
+            .append(' ')
+            .append(base_time)
+            .append(" (").append(date(base_time)).append(") ");
+          try {
+            buf.append(Internal.getTags(tsdb, key));
+          } catch (RuntimeException e) {
+            buf.append(e.getClass().getName() + ": " + e.getMessage());
           }
+          buf.append('\n');
+          System.out.print(buf);
+        }
 
-          // Print individual cells.
-          buf.setLength(0);
-          if (!importformat) {
-            buf.append("  ");
-          }
-          for (final KeyValue kv : row) {
-            // Discard everything or keep initial spaces.
-            buf.setLength(importformat ? 0 : 2);
-            formatKeyValue(buf, tsdb, importformat, kv, base_time, metric);
-            buf.append('\n');
-            System.out.print(buf);
-          }
+        // Print individual cells.
+        buf.setLength(0);
+        if (!importformat) {
+          buf.append("  ");
+        }
+        for (final KeyValue kv : row) {
+          // Discard everything or keep initial spaces.
+          buf.setLength(importformat ? 0 : 2);
+          formatKeyValue(buf, tsdb, importformat, kv, base_time, metric);
+          buf.append('\n');
+          System.out.print(buf);
+        }
 
-          if (delete) {
-            final DeleteRequest del = new DeleteRequest(table, key);
-            client.delete(del);
-          }
+        if (delete) {
+          final Delete del = new Delete(key);
+          table.delete(del);
         }
       }
     }
@@ -140,9 +144,9 @@ final class DumpSeries {
   static void formatKeyValue(final StringBuilder buf,
                              final TSDB tsdb,
                              final KeyValue kv,
-                             final long base_time) {
+                             final long base_time) throws IOException {
     formatKeyValue(buf, tsdb, true, kv, base_time,
-                   Internal.metricName(tsdb, kv.key()));
+                   Internal.metricName(tsdb, kv.getRow()));
   }
 
   private static void formatKeyValue(final StringBuilder buf,
@@ -150,12 +154,12 @@ final class DumpSeries {
                                      final boolean importformat,
                                      final KeyValue kv,
                                      final long base_time,
-                                     final String metric) {
+                                     final String metric) throws IOException {
     if (importformat) {
       buf.append(metric).append(' ');
     }
-    final byte[] qualifier = kv.qualifier();
-    final byte[] cell = kv.value();
+    final byte[] qualifier = kv.getQualifier();
+    final byte[] cell = kv.getValue();
     if (qualifier.length != 2 && cell[cell.length - 1] != 0) {
       throw new IllegalDataException("Don't know how to read this value:"
         + Arrays.toString(cell) + " found in " + kv
@@ -174,7 +178,7 @@ final class DumpSeries {
     if (importformat) {
       final StringBuilder tagsbuf = new StringBuilder();
       for (final Map.Entry<String, String> tag
-           : Internal.getTags(tsdb, kv.key()).entrySet()) {
+           : Internal.getTags(tsdb, kv.getRow()).entrySet()) {
         tagsbuf.append(' ').append(tag.getKey())
           .append('=').append(tag.getValue());
       }

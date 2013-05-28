@@ -20,7 +20,6 @@ import org.slf4j.LoggerFactory;
 import org.jboss.netty.logging.InternalLoggerFactory;
 import org.jboss.netty.logging.Slf4JLoggerFactory;
 
-import org.hbase.async.HBaseClient;
 
 /** Helper functions to parse arguments passed to {@code main}.  */
 final class CliOptions {
@@ -84,24 +83,25 @@ final class CliOptions {
       // SLF4J doesn't provide any API to programmatically set the logging
       // level of the underlying logging library.  So we have to violate the
       // encapsulation provided by SLF4J.
-      for (final Logger logger :
-           ((Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME))
-             .getLoggerContext().getLoggerList()) {
-        logger.setLevel(Level.WARN);
-      }
+      //TODO fix this verbosity stuff
+//      for (final Logger logger :
+//           ((Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME))
+//             .getLoggerContext().getLoggerList()) {
+//        logger.setLevel(Level.WARN);
+//      }
     }
   }
 
-  static HBaseClient clientFromOptions(final ArgP argp) {
-    if (argp.optionExists("--auto-metric") && argp.has("--auto-metric")) {
-      System.setProperty("tsd.core.auto_create_metrics", "true");
-    }
-    final String zkq = argp.get("--zkquorum", "localhost");
-    if (argp.has("--zkbasedir")) {
-      return new HBaseClient(zkq, argp.get("--zkbasedir"));
-    } else {
-      return new HBaseClient(zkq);
-    }
-  }
+//  static HTable clientFromOptions(final ArgP argp) {
+//    if (argp.optionExists("--auto-metric") && argp.has("--auto-metric")) {
+//      System.setProperty("tsd.core.auto_create_metrics", "true");
+//    }
+//    final String zkq = argp.get("--zkquorum", "localhost");
+//    if (argp.has("--zkbasedir")) {
+//      return new HTable(HBaseConfiguration.create(), argp.get("--zkbasedir"));
+//    } else {
+//      return new HBaseClient(zkq);
+//    }
+//  }
 
 }

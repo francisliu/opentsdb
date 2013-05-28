@@ -12,9 +12,8 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.Map;
-
-import org.hbase.async.HBaseException;
 
 import net.opentsdb.uid.NoSuchUniqueName;
 
@@ -75,7 +74,7 @@ public interface Query {
    * does not exist.
    */
   void setTimeSeries(String metric, Map<String, String> tags,
-                     Aggregator function, boolean rate) throws NoSuchUniqueName;
+                     Aggregator function, boolean rate) throws NoSuchUniqueName, IOException;
 
   /**
    * Downsamples the results by specifying a fixed interval between points.
@@ -102,6 +101,6 @@ public interface Query {
    * @throws HBaseException if there was a problem communicating with HBase to
    * perform the search.
    */
-  DataPoints[] run() throws HBaseException;
+  DataPoints[] run() throws IOException;
 
 }

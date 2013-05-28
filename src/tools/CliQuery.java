@@ -18,10 +18,10 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.hbase.async.HBaseClient;
 
 import net.opentsdb.core.Aggregator;
 import net.opentsdb.core.Aggregators;
@@ -102,8 +102,9 @@ final class CliQuery {
       usage(argp, "Not enough arguments.", 2);
     }
 
-    final HBaseClient client = CliOptions.clientFromOptions(argp);
-    final TSDB tsdb = new TSDB(client, argp.get("--table", "tsdb"),
+//    final HBaseClient client = CliOptions.clientFromOptions(argp);
+    Configuration conf = HBaseConfiguration.create();
+    final TSDB tsdb = new TSDB(conf, argp.get("--table", "tsdb"),
                                argp.get("--uidtable", "tsdb-uid"));
     final String basepath = argp.get("--graph");
     argp = null;
@@ -113,7 +114,7 @@ final class CliQuery {
       plot = doQuery(tsdb, args, basepath != null);
     } finally {
       try {
-        tsdb.shutdown().joinUninterruptibly();
+        tsdb.shutdown();
       } catch (Exception e) {
         LOG.error("Unexpected exception", e);
         System.exit(1);
@@ -133,7 +134,7 @@ final class CliQuery {
 
   private static Plot doQuery(final TSDB tsdb,
                               final String args[],
-                              final boolean want_plot) {
+                              final boolean want_plot) throws IOException {
     final ArrayList<String> plotparams = new ArrayList<String>();
     final ArrayList<Query> queries = new ArrayList<Query>();
     final ArrayList<String> plotoptions = new ArrayList<String>();
@@ -192,7 +193,7 @@ final class CliQuery {
                                     final TSDB tsdb,
                                     final ArrayList<Query> queries,
                                     final ArrayList<String> plotparams,
-                                    final ArrayList<String> plotoptions) {
+                                    final ArrayList<String> plotoptions) throws IOException {
     final long start_ts = parseDate(args[0]);
     final long end_ts = (args.length > 3
                          && (args[1].charAt(0) != '+'

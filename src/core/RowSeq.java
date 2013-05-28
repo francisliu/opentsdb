@@ -12,6 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
@@ -19,11 +20,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 
+import net.opentsdb.Bytes;
+import org.apache.hadoop.hbase.KeyValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.hbase.async.Bytes;
-import org.hbase.async.KeyValue;
 
 /**
  * Represents a read-only sequence of continuous HBase rows.
@@ -72,9 +72,9 @@ final class RowSeq implements DataPoints {
       throw new IllegalStateException("setRow was already called on " + this);
     }
 
-    this.key = row.key();
-    this.qualifiers = row.qualifier();
-    this.values = row.value();
+    this.key = row.getRow();
+    this.qualifiers = row.getQualifier();
+    this.values = row.getValue();
   }
 
   /**
@@ -94,7 +94,7 @@ final class RowSeq implements DataPoints {
       throw new IllegalStateException("setRow was never called on " + this);
     }
 
-    final byte[] key = row.key();
+    final byte[] key = row.getRow();
     final long base_time = Bytes.getUnsignedInt(key, tsdb.metrics.width());
     final int time_adj = (int) (base_time - baseTime());
     if (time_adj <= 0) {
@@ -119,7 +119,7 @@ final class RowSeq implements DataPoints {
       return;
     }
 
-    final byte[] qual = row.qualifier();
+    final byte[] qual = row.getQualifier();
     final int len = qual.length;
     int last_delta = Bytes.getUnsignedShort(qualifiers, qualifiers.length - 2);
     last_delta >>= Const.FLAG_BITS;
@@ -152,7 +152,7 @@ final class RowSeq implements DataPoints {
     }
     this.qualifiers = newquals;
 
-    final byte[] val = row.value();
+    final byte[] val = row.getValue();
     // If both the current `values' and the new `val' are single values, then
     // we neither of them has a meta data byte so we need to add one to be
     // consistent with what we expect from compacted values.  Otherwise, we
@@ -225,14 +225,14 @@ final class RowSeq implements DataPoints {
                                    + Arrays.toString(values));
   }
 
-  public String metricName() {
+  public String metricName() throws IOException {
     if (key == null) {
       throw new IllegalStateException("the row key is null!");
     }
     return RowKey.metricName(tsdb, key);
   }
 
-  public Map<String, String> getTags() {
+  public Map<String, String> getTags() throws IOException {
     return Tags.getTags(tsdb, key);
   }
 
@@ -324,7 +324,12 @@ final class RowSeq implements DataPoints {
   public String toString() {
     // The argument passed to StringBuilder is a pretty good estimate of the
     // length of the final string based on the row key and number of elements.
-    final String metric = metricName();
+    final String metric;
+    try {
+      metric = metricName();
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
+    }
     final int size = size();
     final StringBuilder buf = new StringBuilder(80 + metric.length()
                                                 + key.length * 4

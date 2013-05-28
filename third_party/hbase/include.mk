@@ -1,4 +1,4 @@
-# Copyright (C) 2011-2012  The OpenTSDB Authors.
+# Copyright (C) 2013  The OpenTSDB Authors.
 #
 # This library is free software: you can redistribute it and/or modify it
 # under the terms of the GNU Lesser General Public License as published
@@ -13,11 +13,11 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this library.  If not, see <http://www.gnu.org/licenses/>.
 
-ASYNCHBASE_VERSION := 1.4.1
-ASYNCHBASE := third_party/hbase/asynchbase-$(ASYNCHBASE_VERSION).jar
-ASYNCHBASE_BASE_URL := $(OPENTSDB_THIRD_PARTY_BASE_URL)
+HBASE_VERSION := 0.94
+HBASE := third_party/hbase/hbase-$(HAMCREST_VERSION).jar
+HBASE_BASE_URL := http://search.maven.org/remotecontent?filepath=org/apache/hbase/$(HBASE_VERSION)
 
-$(ASYNCHBASE): $(ASYNCHBASE).md5
-	set dummy "$(ASYNCHBASE_BASE_URL)" "$(ASYNCHBASE)"; shift; $(FETCH_DEPENDENCY)
+$(HBASE): $(HBASE).md5
+	set dummy "$(HBASE_BASE_URL)" "$(HBASE)"; shift; $(FETCH_DEPENDENCY)
 
-THIRD_PARTY += $(ASYNCHBASE)
+THIRD_PARTY += $(HBASE)

@@ -12,7 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.uid;
 
-import org.hbase.async.HBaseException;
+import java.io.IOException;
 
 /**
  * Represents a table of Unique IDs, manages the lookup and creation of IDs.
@@ -55,7 +55,7 @@ public interface UniqueIdInterface {
    * @throws IllegalArgumentException if the ID given in argument is encoded
    * on the wrong number of bytes.
    */
-  String getName(byte[] id) throws NoSuchUniqueId, HBaseException;
+  String getName(byte[] id) throws NoSuchUniqueId, IOException;
 
   /**
    * Finds the ID associated with a given name.
@@ -70,7 +70,7 @@ public interface UniqueIdInterface {
    * @throws IllegalStateException if the ID found in HBase is encoded on the
    * wrong number of bytes.
    */
-  byte[] getId(String name) throws NoSuchUniqueName, HBaseException;
+  byte[] getId(String name) throws NoSuchUniqueName, IOException;
 
   /**
    * Finds the ID associated with a given name or creates it.
@@ -83,6 +83,6 @@ public interface UniqueIdInterface {
    * @throws IllegalStateException if the ID found in HBase is encoded on the
    * wrong number of bytes.
    */
-  byte[] getOrCreateId(String name) throws HBaseException, IllegalStateException;
+  byte[] getOrCreateId(String name) throws IOException, IllegalStateException;
 
 }

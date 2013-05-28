@@ -12,11 +12,10 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.Map;
 
 import com.stumbleupon.async.Deferred;
-
-import org.hbase.async.HBaseException;
 
 /**
  * Represents a mutable sequence of continuous data points.
@@ -38,7 +37,7 @@ public interface WritableDataPoints extends DataPoints {
    * @throws IllegalArgumentException if the tags list is empty or one of the
    * elements contains illegal characters.
    */
-  void setSeries(String metric, Map<String, String> tags);
+  void setSeries(String metric, Map<String, String> tags) throws IOException;
 
   /**
    * Adds a {@code long} data point to the TSDB.
@@ -57,7 +56,7 @@ public interface WritableDataPoints extends DataPoints {
    * @throws HBaseException (deferred) if there was a problem while persisting
    * data.
    */
-  Deferred<Object> addPoint(long timestamp, long value);
+  void addPoint(long timestamp, long value) throws IOException;
 
   /**
    * Appends a {@code float} data point to this sequence.
@@ -78,7 +77,7 @@ public interface WritableDataPoints extends DataPoints {
    * @throws HBaseException (deferred) if there was a problem while persisting
    * data.
    */
-  Deferred<Object> addPoint(long timestamp, float value);
+  void addPoint(long timestamp, float value) throws IOException;
 
   /**
    * Specifies for how long to buffer edits, in milliseconds.

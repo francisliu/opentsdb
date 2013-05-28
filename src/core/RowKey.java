@@ -12,6 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.Arrays;
 
 /** Helper functions to deal with the row key. */
@@ -27,7 +28,7 @@ final class RowKey {
    * @param row The actual row key.
    * @return The name of the metric.
    */
-  static String metricName(final TSDB tsdb, final byte[] row) {
+  static String metricName(final TSDB tsdb, final byte[] row) throws IOException {
     final byte[] id = Arrays.copyOfRange(row, 0, tsdb.metrics.width());
     return tsdb.metrics.getName(id);
   }

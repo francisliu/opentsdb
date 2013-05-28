@@ -12,6 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.tsd;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -34,8 +35,8 @@ final class PutDataPointRpc implements TelnetRpc {
   private static final AtomicLong illegal_arguments = new AtomicLong();
   private static final AtomicLong unknown_metrics = new AtomicLong();
 
-  public Deferred<Object> execute(final TSDB tsdb, final Channel chan,
-                                  final String[] cmd) {
+  public void execute(final TSDB tsdb, final Channel chan,
+                                  final String[] cmd) throws IOException {
     requests.incrementAndGet();
     String errmsg = null;
     try {
@@ -51,7 +52,7 @@ final class PutDataPointRpc implements TelnetRpc {
           return "report error to channel";
         }
       }
-      return importDataPoint(tsdb, cmd).addErrback(new PutErrback());
+      importDataPoint(tsdb, cmd);
     } catch (NumberFormatException x) {
       errmsg = "put: invalid value: " + x.getMessage() + '\n';
       invalid_values.incrementAndGet();
@@ -65,7 +66,6 @@ final class PutDataPointRpc implements TelnetRpc {
     if (errmsg != null && chan.isConnected()) {
       chan.write(errmsg);
     }
-    return Deferred.fromResult(null);
   }
 
   /**
@@ -90,7 +90,7 @@ final class PutDataPointRpc implements TelnetRpc {
    * @throws IllegalArgumentException if any other argument is invalid.
    * @throws NoSuchUniqueName if the metric isn't registered.
    */
-  private Deferred<Object> importDataPoint(final TSDB tsdb, final String[] words) {
+  private void importDataPoint(final TSDB tsdb, final String[] words) throws IOException {
     words[0] = null; // Ditch the "put".
     if (words.length < 5) {  // Need at least: metric timestamp value tag
       //               ^ 5 and not 4 because words[0] is "put".
@@ -116,9 +116,9 @@ final class PutDataPointRpc implements TelnetRpc {
       }
     }
     if (Tags.looksLikeInteger(value)) {
-      return tsdb.addPoint(metric, timestamp, Tags.parseLong(value), tags);
+      tsdb.addPoint(metric, timestamp, Tags.parseLong(value), tags);
     } else {  // floating point value
-      return tsdb.addPoint(metric, timestamp, Float.parseFloat(value), tags);
+      tsdb.addPoint(metric, timestamp, Float.parseFloat(value), tags);
     }
   }
 }

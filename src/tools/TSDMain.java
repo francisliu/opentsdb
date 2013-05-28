@@ -13,10 +13,14 @@
 package net.opentsdb.tools;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.concurrent.Executors;
 
+import net.opentsdb.tsd.PipelineFactory;
+import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.client.HTable;
 import org.jboss.netty.channel.socket.ServerSocketChannelFactory;
 import org.jboss.netty.channel.socket.oio.OioServerSocketChannelFactory;
 import org.slf4j.Logger;
@@ -25,11 +29,9 @@ import org.slf4j.LoggerFactory;
 import org.jboss.netty.bootstrap.ServerBootstrap;
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
 
-import org.hbase.async.HBaseClient;
 
 import net.opentsdb.BuildData;
 import net.opentsdb.core.TSDB;
-import net.opentsdb.tsd.PipelineFactory;
 
 /**
  * Main class of the TSD, the Time Series Daemon.
@@ -78,7 +80,7 @@ final class TSDMain {
     System.setProperty(prop, path + '/');
   }
 
-  public static void main(String[] args) {
+  public static void main(String[] args) throws IOException {
     Logger log = LoggerFactory.getLogger(TSDMain.class);
     log.info("Starting.");
     log.info(BuildData.revisionString());
@@ -138,16 +140,19 @@ final class TSDMain {
         OioServerSocketChannelFactory(Executors.newCachedThreadPool(),
                                       Executors.newCachedThreadPool());
     }
-    final HBaseClient client = CliOptions.clientFromOptions(argp);
+    final String table = argp.get("--table", "tsdb");
+    final String uidtable = argp.get("--uidtable", "tsdb-uid");
+    final HTable client = new HTable(HBaseConfiguration.create(), table);
     try {
       // Make sure we don't even start if we can't find out tables.
-      final String table = argp.get("--table", "tsdb");
-      final String uidtable = argp.get("--uidtable", "tsdb-uid");
-      client.ensureTableExists(table).joinUninterruptibly();
-      client.ensureTableExists(uidtable).joinUninterruptibly();
 
-      client.setFlushInterval(flush_interval);
-      final TSDB tsdb = new TSDB(client, table, uidtable);
+      //TODO useless async stuff
+//      CliOptions.clientFromOptions(argp);
+//      client.ensureTableExists(table).joinUninterruptibly();
+//      client.ensureTableExists(uidtable).joinUninterruptibly();
+//      client.setFlushInterval(flush_interval);
+
+      final TSDB tsdb = new TSDB(client.getConfiguration(), table, uidtable);
       registerShutdownHook(tsdb);
       final ServerBootstrap server = new ServerBootstrap(factory);
 
@@ -169,7 +174,7 @@ final class TSDMain {
     } catch (Throwable e) {
       factory.releaseExternalResources();
       try {
-        client.shutdown().joinUninterruptibly();
+        client.close();
       } catch (Exception e2) {
         log.error("Failed to shutdown HBase client", e2);
       }
@@ -203,7 +208,7 @@ final class TSDMain {
       }
       public void run() {
         try {
-          tsdb.shutdown().join();
+          tsdb.shutdown();
         } catch (Exception e) {
           LoggerFactory.getLogger(TSDBShutdown.class)
             .error("Uncaught exception during shutdown", e);

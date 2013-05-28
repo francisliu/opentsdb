@@ -12,10 +12,12 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.List;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -23,13 +25,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import com.stumbleupon.async.Callback;
 import com.stumbleupon.async.Deferred;
 
+import net.opentsdb.Bytes;
+import org.apache.hadoop.hbase.KeyValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.hbase.async.Bytes;
-import org.hbase.async.HBaseRpc;
-import org.hbase.async.KeyValue;
-import org.hbase.async.PleaseThrottleException;
 
 import net.opentsdb.stats.StatsCollector;
 
@@ -102,13 +101,13 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
    * exception).  In case of success, the kind of object returned is
    * unspecified.
    */
-  public Deferred<ArrayList<Object>> flush() {
+  public void flush() throws IOException {
     final int size = size();
     if (size > 0) {
       LOG.info("Flushing all old outstanding rows out of " + size + " rows");
     }
     final long now = System.currentTimeMillis();
-    return flush(now / 1000 - Const.MAX_TIMESPAN - 1, Integer.MAX_VALUE);
+    flush(now / 1000 - Const.MAX_TIMESPAN - 1, Integer.MAX_VALUE);
   }
 
   /**
@@ -139,16 +138,15 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
    * @return A deferred that will be called back once everything has been
    * flushed.
    */
-  private Deferred<ArrayList<Object>> flush(final long cut_off, int maxflushes) {
+  private void flush(final long cut_off, int maxflushes) throws IOException {
     assert maxflushes > 0: "maxflushes must be > 0, but I got " + maxflushes;
     // We can't possibly flush more entries than size().
     maxflushes = Math.min(maxflushes, size());
     if (maxflushes == 0) {  // Because size() might be 0.
-      return Deferred.fromResult(new ArrayList<Object>(0));
+      return;
     }
     final ArrayList<Deferred<Object>> ds =
-      new ArrayList<Deferred<Object>>(Math.min(maxflushes,
-                                               MAX_CONCURRENT_FLUSHES));
+      new ArrayList<Deferred<Object>>(Math.min(maxflushes, MAX_CONCURRENT_FLUSHES));
     int nflushes = 0;
     for (final byte[] row : this.keySet()) {
       if (maxflushes == 0) {
@@ -172,27 +170,31 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
       nflushes++;
       maxflushes--;
       size.decrementAndGet();
-      ds.add(tsdb.get(row).addCallbacks(compactcb, handle_read_error));
+      try {
+        compactcb.call(tsdb.get(row).list());
+      } catch (IOException e) {
+        throw (IOException)handle_read_error.call(e);
+      }
     }
     final Deferred<ArrayList<Object>> group = Deferred.group(ds);
     if (nflushes == MAX_CONCURRENT_FLUSHES && maxflushes > 0) {
       // We're not done yet.  Once this group of flushes completes, we need
       // to kick off more.
       tsdb.flush();  // Speed up this batch by telling the client to flush.
-      final int maxflushez = maxflushes;  // Make it final for closure.
-      final class FlushMoreCB implements Callback<Deferred<ArrayList<Object>>,
-                                                  ArrayList<Object>> {
-        public Deferred<ArrayList<Object>> call(final ArrayList<Object> arg) {
-          return flush(cut_off, maxflushez);
-        }
-        public String toString() {
-          return "Continue flushing with cut_off=" + cut_off
-            + ", maxflushes=" + maxflushez;
-        }
-      }
-      group.addCallbackDeferring(new FlushMoreCB());
+//TODO francis need to deal with max flushes
+//      final int maxflushez = maxflushes;  // Make it final for closure.
+//      final class FlushMoreCB implements Callback<Deferred<ArrayList<Object>>,
+//                                                  ArrayList<Object>> {
+//        public void call(final ArrayList<Object> arg) throws IOException {
+//          flush(cut_off, maxflushez);
+//        }
+//        public String toString() {
+//          return "Continue flushing with cut_off=" + cut_off
+//            + ", maxflushes=" + maxflushez;
+//        }
+//      }
+//      group.addCallbackDeferring(new FlushMoreCB());
     }
-    return group;
   }
 
   private final CompactCB compactcb = new CompactCB();
@@ -203,9 +205,10 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
    * This is used once the "get" completes, to actually compact the row and
    * write back the compacted version.
    */
-  private final class CompactCB implements Callback<Object, ArrayList<KeyValue>> {
-    public Object call(final ArrayList<KeyValue> row) {
-      return compact(row, null);
+  private final class CompactCB implements Callback<Object, List<KeyValue>> {
+    public Object call(final List<KeyValue> row) throws IOException {
+      compact(row, null);
+      return null;
     }
     public String toString() {
       return "compact";
@@ -218,7 +221,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
    * Must contain at least one element.
    * @return A compacted version of this row.
    */
-  KeyValue compact(final ArrayList<KeyValue> row) {
+  KeyValue compact(final List<KeyValue> row) throws IOException {
     final KeyValue[] compacted = { null };
     compact(row, compacted);
     return compacted[0];
@@ -240,32 +243,32 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
    * @return A {@link Deferred} if the compaction processed required a write
    * to HBase, otherwise {@code null}.
    */
-  private Deferred<Object> compact(final ArrayList<KeyValue> row,
-                                   final KeyValue[] compacted) {
+  private void compact(final List<KeyValue> row,
+                                   final KeyValue[] compacted) throws IOException {
     if (row.size() <= 1) {
       if (row.isEmpty()) {  // Maybe the row got deleted in the mean time?
         LOG.debug("Attempted to compact a row that doesn't exist.");
       } else if (compacted != null) {
         // no need to re-compact rows containing a single value.
         KeyValue kv = row.get(0);
-        final byte[] qual = kv.qualifier();
+        final byte[] qual = kv.getQualifier();
         if (qual.length % 2 != 0 || qual.length == 0) {
           // Right now we expect all qualifiers to have an even number of
           // bytes.  We only have one KV and it doesn't look valid so just
           // ignore this whole row.
-          return null;
+          return;
         }
-        final byte[] val = kv.value();
+        final byte[] val = kv.getValue();
         if (qual.length == 2 && floatingPointValueToFix(qual[1], val)) {
           // Fix up old, incorrectly encoded floating point value.
           final byte[] newval = fixFloatingPointValue(qual[1], val);
           final byte[] newqual = new byte[] { qual[0],
             fixQualifierFlags(qual[1], newval.length) };
-          kv = new KeyValue(kv.key(), kv.family(), newqual, newval);
+          kv = new KeyValue(kv.getRow(), kv.getFamily(), newqual, newval);
         }
         compacted[0] = kv;
       }
-      return null;
+      return;
     }
 
     // We know we have at least 2 cells.  We need to go through all the cells
@@ -285,7 +288,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
       int nkvs = row.size();
       for (int i = 0; i < nkvs; i++) {
         final KeyValue kv = row.get(i);
-        final byte[] qual = kv.qualifier();
+        final byte[] qual = kv.getQualifier();
         // If the qualifier length isn't 2, this row might have already
         // been compacted, potentially partially, so we need to merge the
         // partially compacted set of cells, with the rest.
@@ -306,7 +309,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
           }
           trivial = false;
           // We only do this here because no qualifier can be < 2 bytes.
-          if (len > longest.qualifier().length) {
+          if (len > longest.getQualifier().length) {
             longest = kv;
             longest_idx = i;
           }
@@ -328,7 +331,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
           last_delta = delta;
           // We don't need it below for complex compactions, so we update it
           // only here in the `else' branch.
-          final byte[] v = kv.value();
+          final byte[] v = kv.getValue();
           val_len += floatingPointValueToFix(qual[1], v) ? 4 : v.length;
         }
         qual_len += len;
@@ -339,13 +342,14 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
         // chose to ignore some in the mean time, so now we're left with
         // either none, or just one.
         if (row.isEmpty()) {
-          return null;  // No KV left, just ignore this whole row.
+          return;  // No KV left, just ignore this whole row.
         } // else: row.size() == 1
         // We have only one KV left, we call ourselves recursively to handle
         // the case where this KV is an old, incorrectly encoded floating
         // point value that needs to be fixed.  This is guaranteed to not
         // recurse again.
-        return compact(row, compacted);
+        compact(row, compacted);
+        return;
       } else if (trivial) {
         trivial_compactions.incrementAndGet();
         compact = trivialCompact(row, qual_len, val_len);
@@ -361,8 +365,8 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
         // Optimization: since we kept track of which KV had the longest
         // qualifier, we can opportunistically check here if it happens to
         // have the same qualifier as the one we just created.
-        final byte[] qual = compact.qualifier();
-        final byte[] longest_qual = longest.qualifier();
+        final byte[] qual = compact.getQualifier();
+        final byte[] longest_qual = longest.getQualifier();
         if (qual.length <= longest_qual.length) {
           KeyValue dup = null;
           int dup_idx = -1;
@@ -378,7 +382,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
             // this code with an `assert false: "should never be here"'?
             for (int i = 0; i < nkvs; i++) {
               final KeyValue kv = row.get(i);
-              if (Bytes.equals(kv.qualifier(), qual)) {
+              if (Bytes.equals(kv.getQualifier(), qual)) {
                 dup = kv;
                 dup_idx = i;
                 break;
@@ -388,7 +392,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
           if (dup != null) {
             // So we did find an existing KV with the same qualifier.
             // Let's check if, by chance, the value is the same too.
-            if (Bytes.equals(dup.value(), compact.value())) {
+            if (Bytes.equals(dup.getValue(), compact.getValue())) {
               // Since the values are the same, we don't need to write
               // anything.  There's already a properly compacted version of
               // this row in TSDB.
@@ -405,32 +409,36 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
     }
     if (compacted != null) {  // Caller is interested in the compacted form.
       compacted[0] = compact;
-      final long base_time = Bytes.getUnsignedInt(compact.key(), metric_width);
+      final long base_time = Bytes.getUnsignedInt(compact.getRow(), metric_width);
       final long cut_off = System.currentTimeMillis() / 1000
         - Const.MAX_TIMESPAN - 1;
       if (base_time > cut_off) {  // If row is too recent...
-        return null;              // ... Don't write back compacted.
+        return;              // ... Don't write back compacted.
       }
     }
     if (!TSDB.enable_compactions) {
-      return null;
+      return;
     }
 
-    final byte[] key = compact.key();
+    final byte[] key = compact.getRow();
     //LOG.debug("Compacting row " + Arrays.toString(key));
     deleted_cells.addAndGet(row.size());  // We're going to delete this.
     if (write) {
-      final byte[] qual = compact.qualifier();
-      final byte[] value = compact.value();
+      final byte[] qual = compact.getQualifier();
+      final byte[] value = compact.getValue();
       written_cells.incrementAndGet();
-      return tsdb.put(key, qual, value)
-        .addCallbacks(new DeleteCompactedCB(row), handle_write_error);
+      try {
+        tsdb.put(key, qual, value);
+        new DeleteCompactedCB(row).call(null);
+      } catch (IOException e) {
+        throw (IOException)handle_write_error.call(e);
+      }
     } else {
       // We had nothing to write, because one of the cells is already the
       // correctly compacted version, so we can go ahead and delete the
       // individual cells directly.
       new DeleteCompactedCB(row).call(null);
-      return null;
+      return;
     }
   }
 
@@ -447,7 +455,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
    * @return a {@link KeyValue} containing the result of the merge of all the
    * {@code KeyValue}s given in argument.
    */
-  private static KeyValue trivialCompact(final ArrayList<KeyValue> row,
+  private static KeyValue trivialCompact(final List<KeyValue> row,
                                          final int qual_len,
                                          final int val_len) {
     // Now let's simply concatenate all the qualifiers and values together.
@@ -457,10 +465,10 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
     int qual_idx = 0;
     int val_idx = 0;
     for (final KeyValue kv : row) {
-      final byte[] q = kv.qualifier();
+      final byte[] q = kv.getQualifier();
       // We shouldn't get into this function if this isn't true.
       assert q.length == 2: "Qualifier length must be 2: " + kv;
-      final byte[] v = fixFloatingPointValue(q[1], kv.value());
+      final byte[] v = fixFloatingPointValue(q[1], kv.getValue());
       qualifier[qual_idx++] = q[0];
       qualifier[qual_idx++] = fixQualifierFlags(q[1], v.length);
       System.arraycopy(v, 0, value, val_idx, v.length);
@@ -470,7 +478,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
     // used in the future to introduce more formats/encodings.
 
     final KeyValue first = row.get(0);
-    return new KeyValue(first.key(), first.family(), qualifier, value);
+    return new KeyValue(first.getRow(), first.getFamily(), qualifier, value);
   }
 
   /**
@@ -597,7 +605,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
    * @throws IllegalDataException if one of the cells cannot be read because
    * it's corrupted or in a format we don't understand.
    */
-  static KeyValue complexCompact(final ArrayList<KeyValue> row,
+  static KeyValue complexCompact(final List<KeyValue> row,
                                  final int estimated_nvalues) {
     // We know at least one of the cells contains multiple values, and we need
     // to merge all the cells together in a sorted fashion.  We use a simple
@@ -673,7 +681,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
     // used in the future to introduce more formats/encodings.
 
     final KeyValue first = row.get(0);
-    final KeyValue kv = new KeyValue(first.key(), first.family(),
+    final KeyValue kv = new KeyValue(first.getRow(), first.getFamily(),
                                      qualifier, value);
     return kv;
   }
@@ -687,13 +695,13 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
    * @throws IllegalDataException if one of the cells cannot be read because
    * it's corrupted or in a format we don't understand.
    */
-  private static ArrayList<Cell> breakDownValues(final ArrayList<KeyValue> row,
+  private static ArrayList<Cell> breakDownValues(final List<KeyValue> row,
                                                  final int estimated_nvalues) {
     final ArrayList<Cell> cells = new ArrayList<Cell>(estimated_nvalues);
     for (final KeyValue kv : row) {
-      final byte[] qual = kv.qualifier();
+      final byte[] qual = kv.getQualifier();
       final int len = qual.length;
-      final byte[] val = kv.value();
+      final byte[] val = kv.getValue();
       if (len == 2) {  // Single-value cell.
         // Maybe we need to fix the flags in the qualifier.
         final byte[] actual_val = fixFloatingPointValue(qual[1], val);
@@ -752,18 +760,23 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
     private final byte[] family;
     private final byte[][] qualifiers;
 
-    public DeleteCompactedCB(final ArrayList<KeyValue> cells) {
+    public DeleteCompactedCB(final List<KeyValue> cells) {
       final KeyValue first = cells.get(0);
-      key = first.key();
-      family = first.family();
+      key = first.getRow();
+      family = first.getFamily();
       qualifiers = new byte[cells.size()][];
       for (int i = 0; i < qualifiers.length; i++) {
-        qualifiers[i] = cells.get(i).qualifier();
+        qualifiers[i] = cells.get(i).getQualifier();
       }
     }
 
-    public Object call(final Object arg) {
-      return tsdb.delete(key, qualifiers).addErrback(handle_delete_error);
+    public Object call(final Object arg) throws IOException {
+      try {
+        tsdb.delete(key, qualifiers);
+        return null;
+      } catch (IOException e) {
+        throw (IOException)handle_delete_error.call(e);
+      }
     }
 
     public String toString() {
@@ -794,19 +807,6 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
     }
 
     public Object call(final Exception e) {
-      if (e instanceof PleaseThrottleException) {  // HBase isn't keeping up.
-        final HBaseRpc rpc = ((PleaseThrottleException) e).getFailedRpc();
-        if (rpc instanceof HBaseRpc.HasKey) {
-          // We failed to compact this row.  Whether it's because of a failed
-          // get, put or delete, we should re-schedule this row for a future
-          // compaction.
-          add(((HBaseRpc.HasKey) rpc).key());
-          return Boolean.TRUE;  // We handled it, so don't return an exception.
-        } else {  // Should never get in this clause.
-          LOG.error("WTF?  Cannot retry this RPC, and this shouldn't happen: "
-                    + rpc);
-        }
-      }
       // `++' is not atomic but doesn't matter if we miss some increments.
       if (++errors % 100 == 1) {  // Basic rate-limiting to not flood logs.
         LOG.error("Failed to " + what + " a row to re-compact", e);
@@ -920,7 +920,11 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
           Thread.sleep(FLUSH_INTERVAL * 1000);
         } catch (InterruptedException e) {
           LOG.error("Compaction thread interrupted, doing one last flush", e);
-          flush();
+          try {
+            flush();
+          } catch (IOException e1) {
+            LOG.error("Failed to compact", e1);
+          }
           return;
         }
       }

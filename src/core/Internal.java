@@ -12,12 +12,13 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import net.opentsdb.Bytes;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.ResultScanner;
+
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Map;
-
-import org.hbase.async.Bytes;
-import org.hbase.async.KeyValue;
-import org.hbase.async.Scanner;
 
 /**
  * <strong>This class is not part of the public API.</strong>
@@ -73,12 +74,12 @@ public final class Internal {
   }
 
   /** @see TsdbQuery#getScanner */
-  public static Scanner getScanner(final Query query) {
+  public static ResultScanner getScanner(final Query query) throws IOException {
     return ((TsdbQuery) query).getScanner();
   }
 
   /** @see RowKey#metricName */
-  public static String metricName(final TSDB tsdb, final byte[] id) {
+  public static String metricName(final TSDB tsdb, final byte[] id) throws IOException {
     return RowKey.metricName(tsdb, id);
   }
 
@@ -88,7 +89,7 @@ public final class Internal {
   }
 
   /** @see Tags#getTags */
-  public static Map<String, String> getTags(final TSDB tsdb, final byte[] row) {
+  public static Map<String, String> getTags(final TSDB tsdb, final byte[] row) throws IOException {
     return Tags.getTags(tsdb, row);
   }
 
@@ -114,7 +115,7 @@ public final class Internal {
   public static KeyValue complexCompact(final KeyValue kv) {
     final ArrayList<KeyValue> kvs = new ArrayList<KeyValue>(1);
     kvs.add(kv);
-    return CompactionQueue.complexCompact(kvs, kv.qualifier().length / 2);
+    return CompactionQueue.complexCompact(kvs, kv.getQualifier().length / 2);
   }
 
 }

@@ -12,6 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
@@ -20,8 +21,8 @@ import java.util.Map;
 
 import com.stumbleupon.async.Deferred;
 
-import org.hbase.async.Bytes;
-import org.hbase.async.PutRequest;
+import net.opentsdb.Bytes;
+import org.apache.hadoop.hbase.client.Put;
 
 import net.opentsdb.stats.Histogram;
 
@@ -108,7 +109,7 @@ final class IncomingDataPoints implements WritableDataPoints {
    */
   static byte[] rowKeyTemplate(final TSDB tsdb,
                                final String metric,
-                               final Map<String, String> tags) {
+                               final Map<String, String> tags) throws IOException {
     final short metric_width = tsdb.metrics.width();
     final short tag_name_width = tsdb.tag_names.width();
     final short tag_value_width = tsdb.tag_values.width();
@@ -134,7 +135,7 @@ final class IncomingDataPoints implements WritableDataPoints {
     return row;
   }
 
-  public void setSeries(final String metric, final Map<String, String> tags) {
+  public void setSeries(final String metric, final Map<String, String> tags) throws IOException {
     checkMetricAndTags(metric, tags);
     row = rowKeyTemplate(tsdb, metric, tags);
     size = 0;
@@ -178,8 +179,8 @@ final class IncomingDataPoints implements WritableDataPoints {
    * point).
    * @return A deferred object that indicates the completion of the request.
    */
-  private Deferred<Object> addPointInternal(final long timestamp, final byte[] value,
-                                            final short flags) {
+  private void addPointInternal(final long timestamp, final byte[] value,
+                                            final short flags) throws IOException {
     // This particular code path only expects integers on 8 bytes or floating
     // point values on 4 bytes.
     assert value.length == 8 || value.length == 4 : Bytes.pretty(value);
@@ -227,9 +228,8 @@ final class IncomingDataPoints implements WritableDataPoints {
                     : Bytes.getInt(value) & 0x00000000FFFFFFFFL);
     size++;
 
-    final PutRequest point = new PutRequest(tsdb.table, row, TSDB.FAMILY,
-                                            Bytes.fromShort(qualifier),
-                                            value);
+    final Put put = new Put(row);
+    put.add(TSDB.FAMILY, Bytes.fromShort(qualifier), value);
     // TODO(tsuna): The following timing is rather useless.  First of all,
     // the histogram never resets, so it tends to converge to a certain
     // distribution and never changes.  What we really want is a moving
@@ -250,8 +250,8 @@ final class IncomingDataPoints implements WritableDataPoints {
     //};
 
     // TODO(tsuna): Add an errback to handle some error cases here.
-    point.setDurable(!batch_import);
-    return tsdb.client.put(point)/*.addBoth(cb)*/;
+    put.setWriteToWAL(!batch_import);
+    tsdb.client.put(put);
   }
 
   private void grow() {
@@ -269,51 +269,53 @@ final class IncomingDataPoints implements WritableDataPoints {
     return Bytes.getUnsignedInt(row, tsdb.metrics.width());
   }
 
-  public Deferred<Object> addPoint(final long timestamp, final long value) {
+  public void addPoint(final long timestamp, final long value) throws IOException {
     final short flags = 0x7;  // An int stored on 8 bytes.
-    return addPointInternal(timestamp, Bytes.fromLong(value), flags);
+    addPointInternal(timestamp, Bytes.fromLong(value), flags);
   }
 
-  public Deferred<Object> addPoint(final long timestamp, final float value) {
+  public void addPoint(final long timestamp, final float value) throws IOException {
     if (Float.isNaN(value) || Float.isInfinite(value)) {
       throw new IllegalArgumentException("value is NaN or Infinite: " + value
                                          + " for timestamp=" + timestamp);
     }
     final short flags = Const.FLAG_FLOAT | 0x3;  // A float stored on 4 bytes.
-    return addPointInternal(timestamp,
-                            Bytes.fromInt(Float.floatToRawIntBits(value)),
-                            flags);
+    addPointInternal(timestamp,
+                    Bytes.fromInt(Float.floatToRawIntBits(value)),
+                    flags);
   }
 
   public void setBufferingTime(final short time) {
     if (time < 0) {
       throw new IllegalArgumentException("negative time: " + time);
     }
-    tsdb.client.setFlushInterval(time);
+    //TODO deal with this noop
+//    tsdb.client.set(time);
   }
 
   public void setBatchImport(final boolean batchornot) {
+    //TODO deal with this noops
     if (batch_import == batchornot) {
       return;
     }
-    final long current_interval = tsdb.client.getFlushInterval();
+//    final long current_interval = tsdb.client.getFlushInterval();
     if (batchornot) {
       batch_import = true;
       // If we already were given a larger interval, don't override it.
-      if (DEFAULT_BATCH_IMPORT_BUFFER_INTERVAL > current_interval) {
-        setBufferingTime(DEFAULT_BATCH_IMPORT_BUFFER_INTERVAL);
-      }
+//      if (DEFAULT_BATCH_IMPORT_BUFFER_INTERVAL > current_interval) {
+//        setBufferingTime(DEFAULT_BATCH_IMPORT_BUFFER_INTERVAL);
+//      }
     } else {
       batch_import = false;
       // If we're using the default batch import buffer interval,
       // revert back to 0.
-      if (current_interval == DEFAULT_BATCH_IMPORT_BUFFER_INTERVAL) {
-        setBufferingTime((short) 0);
-      }
+//      if (current_interval == DEFAULT_BATCH_IMPORT_BUFFER_INTERVAL) {
+//        setBufferingTime((short) 0);
+//      }
     }
   }
 
-  public String metricName() {
+  public String metricName() throws IOException {
     if (row == null) {
       throw new IllegalStateException("setSeries never called before!");
     }
@@ -321,7 +323,7 @@ final class IncomingDataPoints implements WritableDataPoints {
     return tsdb.metrics.getName(id);
   }
 
-  public Map<String, String> getTags() {
+  public Map<String, String> getTags() throws IOException {
     return Tags.getTags(tsdb, row);
   }
 
@@ -387,7 +389,12 @@ final class IncomingDataPoints implements WritableDataPoints {
   public String toString() {
     // The argument passed to StringBuilder is a pretty good estimate of the
     // length of the final string based on the row key and number of elements.
-    final String metric = metricName();
+    final String metric;
+    try {
+      metric = metricName();
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
+    }
     final StringBuilder buf = new StringBuilder(80 + metric.length()
                                                 + row.length * 4 + size * 16);
     final long base_time = baseTime();

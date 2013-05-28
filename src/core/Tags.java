@@ -12,16 +12,16 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+import net.opentsdb.Bytes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.hbase.async.Bytes;
 
 import net.opentsdb.uid.NoSuchUniqueId;
 import net.opentsdb.uid.NoSuchUniqueName;
@@ -186,7 +186,7 @@ public final class Tags {
    * isn't present in this row key.
    */
   static String getValue(final TSDB tsdb, final byte[] row,
-                         final String name) throws NoSuchUniqueName {
+                         final String name) throws NoSuchUniqueName, IOException {
     validateString("tag name", name);
     final byte[] id = tsdb.tag_names.getId(name);
     final byte[] value_id = getValueId(tsdb, row, id);
@@ -253,7 +253,7 @@ public final class Tags {
    * @throws NoSuchUniqueId if the row key contained an invalid ID (unlikely).
    */
   static Map<String, String> getTags(final TSDB tsdb,
-                                     final byte[] row) throws NoSuchUniqueId {
+                                     final byte[] row) throws NoSuchUniqueId, IOException {
     final short name_width = tsdb.tag_names.width();
     final short value_width = tsdb.tag_values.width();
     final short tag_bytes = (short) (name_width + value_width);
@@ -307,7 +307,7 @@ public final class Tags {
    */
   static ArrayList<byte[]> resolveAll(final TSDB tsdb,
                                       final Map<String, String> tags)
-    throws NoSuchUniqueName {
+      throws NoSuchUniqueName, IOException {
     return resolveAllInternal(tsdb, tags, false);
   }
 
@@ -320,7 +320,7 @@ public final class Tags {
    * @return an array of sorted tags (tag id, tag name).
    */
   static ArrayList<byte[]> resolveOrCreateAll(final TSDB tsdb,
-                                              final Map<String, String> tags) {
+                                              final Map<String, String> tags) throws IOException {
     return resolveAllInternal(tsdb, tags, true);
   }
 
@@ -328,7 +328,7 @@ public final class Tags {
     static ArrayList<byte[]> resolveAllInternal(final TSDB tsdb,
                                                 final Map<String, String> tags,
                                                 final boolean create)
-    throws NoSuchUniqueName {
+      throws NoSuchUniqueName, IOException {
     final ArrayList<byte[]> tag_ids = new ArrayList<byte[]>(tags.size());
     for (final Map.Entry<String, String> entry : tags.entrySet()) {
       final byte[] tag_id = (create
@@ -360,7 +360,7 @@ public final class Tags {
    */
   static HashMap<String, String> resolveIds(final TSDB tsdb,
                                             final ArrayList<byte[]> tags)
-    throws NoSuchUniqueId {
+      throws NoSuchUniqueId, IOException {
     final short name_width = tsdb.tag_names.width();
     final short value_width = tsdb.tag_values.width();
     final short tag_bytes = (short) (name_width + value_width);

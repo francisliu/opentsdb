@@ -12,6 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
@@ -25,13 +26,13 @@ public interface DataPoints extends Iterable<DataPoint> {
   /**
    * Returns the name of the series.
    */
-  String metricName();
+  String metricName() throws IOException;
 
   /**
    * Returns the tags associated with these data points.
    * @return A non-{@code null} map of tag names (keys), tag values (values).
    */
-  Map<String, String> getTags();
+  Map<String, String> getTags() throws IOException;
 
   /**
    * Returns the tags associated with some but not all of the data points.
@@ -46,7 +47,7 @@ public interface DataPoints extends Iterable<DataPoint> {
    * series, the list returned is empty.
    * @return A non-{@code null} list of tag names.
    */
-  List<String> getAggregatedTags();
+  List<String> getAggregatedTags() throws IOException;
 
   /**
    * Returns the number of data points.

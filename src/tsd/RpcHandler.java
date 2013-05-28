@@ -12,6 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.tsd;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -132,7 +133,7 @@ final class RpcHandler extends SimpleChannelUpstreamHandler {
    * @param chan The channel on which the RPC was received.
    * @param command The split telnet-style command.
    */
-  private void handleTelnetRpc(final Channel chan, final String[] command) {
+  private void handleTelnetRpc(final Channel chan, final String[] command) throws IOException {
     TelnetRpc rpc = telnet_commands.get(command[0]);
     if (rpc == null) {
       rpc = unknown_cmd;
@@ -232,21 +233,21 @@ final class RpcHandler extends SimpleChannelUpstreamHandler {
 
   /** The "diediedie" command and "/diediedie" endpoint. */
   private final class DieDieDie implements TelnetRpc, HttpRpc {
-    public Deferred<Object> execute(final TSDB tsdb, final Channel chan,
-                                    final String[] cmd) {
+    public void execute(final TSDB tsdb, final Channel chan,
+                                    final String[] cmd) throws IOException {
       logWarn(chan, "shutdown requested");
       chan.write("Cleaning up and exiting now.\n");
-      return doShutdown(tsdb, chan);
+      doShutdown(tsdb, chan);
     }
 
-    public void execute(final TSDB tsdb, final HttpQuery query) {
+    public void execute(final TSDB tsdb, final HttpQuery query) throws IOException {
       logWarn(query, "shutdown requested");
       query.sendReply(HttpQuery.makePage("TSD Exiting", "You killed me",
                                          "Cleaning up and exiting now."));
       doShutdown(tsdb, query.channel());
     }
 
-    private Deferred<Object> doShutdown(final TSDB tsdb, final Channel chan) {
+    private void doShutdown(final TSDB tsdb, final Channel chan) throws IOException {
       ((GraphHandler) http_commands.get("q")).shutdown();
       ConnectionManager.closeAllConnections();
       // Netty gets stuck in an infinite loop if we shut it down from within a
@@ -260,33 +261,26 @@ final class RpcHandler extends SimpleChannelUpstreamHandler {
         }
       }
       new ShutdownNetty().start();  // Stop accepting new connections.
-
-      // Log any error that might occur during shutdown.
-      final class ShutdownTSDB implements Callback<Exception, Exception> {
-        public Exception call(final Exception arg) {
-          LOG.error("Unexpected exception while shutting down", arg);
-          return arg;
-        }
-        public String toString() {
-          return "shutdown callback";
-        }
+      try {
+        tsdb.shutdown();
+      } catch (IOException e) {
+        LOG.error("Unexpected exception while shutting down", e);
+        throw e;
       }
-      return tsdb.shutdown().addErrback(new ShutdownTSDB());
     }
   }
 
   /** The "exit" command. */
   private static final class Exit implements TelnetRpc {
-    public Deferred<Object> execute(final TSDB tsdb, final Channel chan,
+    public void execute(final TSDB tsdb, final Channel chan,
                                     final String[] cmd) {
       chan.disconnect();
-      return Deferred.fromResult(null);
     }
   }
 
   /** The "help" command. */
   private final class Help implements TelnetRpc {
-    public Deferred<Object> execute(final TSDB tsdb, final Channel chan,
+    public void execute(final TSDB tsdb, final Channel chan,
                                     final String[] cmd) {
       final StringBuilder buf = new StringBuilder();
       buf.append("available commands: ");
@@ -296,7 +290,6 @@ final class RpcHandler extends SimpleChannelUpstreamHandler {
       }
       buf.append('\n');
       chan.write(buf.toString());
-      return Deferred.fromResult(null);
     }
   }
 
@@ -325,7 +318,7 @@ final class RpcHandler extends SimpleChannelUpstreamHandler {
 
   /** The "stats" command and the "/stats" endpoint. */
   private static final class Stats implements TelnetRpc, HttpRpc {
-    public Deferred<Object> execute(final TSDB tsdb, final Channel chan,
+    public void execute(final TSDB tsdb, final Channel chan,
                                     final String[] cmd) {
       final StringBuilder buf = new StringBuilder(1024);
       final StatsCollector collector = new StatsCollector("tsd") {
@@ -336,7 +329,6 @@ final class RpcHandler extends SimpleChannelUpstreamHandler {
       };
       doCollectStats(tsdb, collector);
       chan.write(buf.toString());
-      return Deferred.fromResult(null);
     }
 
     public void execute(final TSDB tsdb, final HttpQuery query) {
@@ -372,7 +364,7 @@ final class RpcHandler extends SimpleChannelUpstreamHandler {
 
   /** The "/suggest" endpoint. */
   private static final class Suggest implements HttpRpc {
-    public void execute(final TSDB tsdb, final HttpQuery query) {
+    public void execute(final TSDB tsdb, final HttpQuery query) throws IOException {
       final String type = query.getRequiredQueryStringParam("type");
       final String q = query.getQueryStringParam("q");
       if (q == null) {
@@ -394,23 +386,21 @@ final class RpcHandler extends SimpleChannelUpstreamHandler {
 
   /** For unknown commands. */
   private static final class Unknown implements TelnetRpc {
-    public Deferred<Object> execute(final TSDB tsdb, final Channel chan,
+    public void execute(final TSDB tsdb, final Channel chan,
                                     final String[] cmd) {
       logWarn(chan, "unknown command : " + Arrays.toString(cmd));
       chan.write("unknown command: " + cmd[0] + ".  Try `help'.\n");
-      return Deferred.fromResult(null);
     }
   }
 
   /** The "version" command. */
   private static final class Version implements TelnetRpc, HttpRpc {
-    public Deferred<Object> execute(final TSDB tsdb, final Channel chan,
+    public void execute(final TSDB tsdb, final Channel chan,
                                     final String[] cmd) {
       if (chan.isConnected()) {
         chan.write(BuildData.revisionString() + '\n'
                    + BuildData.buildString() + '\n');
       }
-      return Deferred.fromResult(null);
     }
 
     public void execute(final TSDB tsdb, final HttpQuery query) {
@@ -464,11 +454,10 @@ final class RpcHandler extends SimpleChannelUpstreamHandler {
 
   /** The "dropcaches" command. */
   private static final class DropCaches implements TelnetRpc, HttpRpc {
-    public Deferred<Object> execute(final TSDB tsdb, final Channel chan,
+    public void execute(final TSDB tsdb, final Channel chan,
                                     final String[] cmd) {
       dropCaches(tsdb, chan);
       chan.write("Caches dropped.\n");
-      return Deferred.fromResult(null);
     }
 
     public void execute(final TSDB tsdb, final HttpQuery query) {

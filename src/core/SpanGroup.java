@@ -12,6 +12,7 @@
 // see <http://www.gnu.org/licenses/>.
 package net.opentsdb.core;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -146,7 +147,7 @@ final class SpanGroup implements DataPoints {
    * @param spans A collection of spans for which to find the common tags.
    * @return A (possibly empty) map of the tags common to all the spans given.
    */
-  private void computeTags() {
+  private void computeTags() throws IOException {
     if (spans.isEmpty()) {
       tags = new HashMap<String, String>(0);
       aggregated_tags = new ArrayList<String>(0);
@@ -172,18 +173,18 @@ final class SpanGroup implements DataPoints {
     aggregated_tags = new ArrayList<String>(discarded_tags);
   }
 
-  public String metricName() {
+  public String metricName() throws IOException {
     return spans.isEmpty() ? "" : spans.get(0).metricName();
   }
 
-  public Map<String, String> getTags() {
+  public Map<String, String> getTags() throws IOException {
     if (tags == null) {
       computeTags();
     }
     return tags;
   }
 
-  public List<String> getAggregatedTags() {
+  public List<String> getAggregatedTags() throws IOException {
     if (tags == null) {
       computeTags();
     }
