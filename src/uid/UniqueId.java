@@ -391,7 +391,7 @@ public final class UniqueId implements UniqueIdInterface {
     try {
       Result results[];
       while ((short) suggestions.size() < MAX_SUGGESTIONS
-             && (results = scanner.next((int)MAX_SUGGESTIONS)) != null) {
+             && (results = scanner.next((int)MAX_SUGGESTIONS)).length > 0) {
         for (final Result result : results) {
           List<KeyValue> row = result.list();
           if (row.size() != 1) {
