@@ -73,6 +73,9 @@ final class CliOptions {
       return null;
     }
     honorVerboseFlag(argp);
+    if (argp.optionExists("--auto-metric") && argp.has("--auto-metric")) {
+      System.setProperty("tsd.core.auto_create_metrics", "true");
+    }
     return args;
   }
 
